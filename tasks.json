@@ -1,0 +1,600 @@
+[
+    {
+        "id": "b9038a797035f8c3-230ee429-e2bf3382",
+        "description": "Wipe Counters",
+        "frequency": 1,
+        "unit": "week",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "09:00",
+            "end": "10:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "bbbfe3dab6947227-b412aefe-b4ad70c8",
+        "description": "Make bed",
+        "frequency": 1,
+        "unit": "day",
+        "restrictions": {
+            "len": 2,
+            "tow": "weekdays",
+            "start": "09:00",
+            "end": "10:00"
+        },
+        "difficulty": 0.27904557733733293
+    },
+    {
+        "id": "df11c2704ad27efc-128b908f-31576bcf",
+        "description": "Masi's eyebrow",
+        "frequency": 15,
+        "unit": "day",
+        "restrictions": {
+            "len": 30,
+            "tow": "weekends",
+            "start": "09:00",
+            "end": "23:00"
+        },
+        "difficulty": 0.7905626602706819
+    },
+    {
+        "id": "85ed834b884de1b5-5e316bcb-a8c8b96e",
+        "description": "Clean toilet seat",
+        "frequency": 2,
+        "unit": "day",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "0bbb7129a76ece94-5642a75c-df2f156e",
+        "description": "Clean sink and counter",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "8ad48a71f937f1d5-d4233546-03f075e4",
+        "description": "Clean bathroom mirror",
+        "frequency": 9,
+        "unit": "day",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "095fa2d73c97d348-cb0df8df-33a7eef6",
+        "description": "Vacuum bathroom",
+        "frequency": 2,
+        "unit": "day",
+        "restrictions": {
+            "len": 2,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.27904557733733293
+    },
+    {
+        "id": "43492bb7461af3fb-409e677b-a47ec57b",
+        "description": "Organize and wipe kitchen shelves",
+        "frequency": 6,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "f537d4755d4ce334-0588d78a-aedd1e70",
+        "description": "Wash study windows",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "af044667894a3dfc-000b3cfc-f03a4f58",
+        "description": "Wash bedroom windows",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "40609301452afa8d-bce2c2b6-e17c9ec8",
+        "description": "Wash living room windows",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "601ecdbf14bf762b-9e7ce044-d3c13de4",
+        "description": "Wash study balcony glasses",
+        "frequency": 17,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "765eeea0a1416fac-d717b756-e06d41fc",
+        "description": "Wash living room balcony glasses",
+        "frequency": 17,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "338451d1b52eae8b-03759a4b-fb95ea04",
+        "description": "Clean study balcony",
+        "frequency": 18,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "e447af3d95b39402-a6059af5-849f7da1",
+        "description": "Clean living room balcony",
+        "frequency": 18,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "d051ca7abaa861f5-435922e2-8be1c52e",
+        "description": "Vacuum",
+        "frequency": 3,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "1254f5cb23d9a40e-c3f4a112-53796d34",
+        "description": "Declutter",
+        "frequency": 4,
+        "unit": "day",
+        "restrictions": {
+            "len": 20,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.685378744699624
+    },
+    {
+        "id": "b5d28031a73dfabb-e8cab0a8-45ceed78",
+        "description": "Clean stove",
+        "frequency": 2,
+        "unit": "day",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "eeec2add103225f4-db1f2631-a51bc88d",
+        "description": "Clean oven",
+        "frequency": 15,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "bae2261e6ff7ab79-e0a2d389-ebeb0b9d",
+        "description": "Clean kitchen sink",
+        "frequency": 30,
+        "unit": "hour",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "809c048d4779313b-21a30aa6-3520e221",
+        "description": "Backflush coffee machine",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "56720218d14c341a-0165dc66-9aae34f6",
+        "description": "Descale coffee machine",
+        "frequency": 16,
+        "unit": "day",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "1d0cc98e9b792229-0596b8ab-af2659d8",
+        "description": "Clean one shelf of freezer",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "e14c796cc0fa9345-69ae5a58-9e37599b",
+        "description": "Clean one shelf of fridge",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "91d150114b662ff7-4e88b1e2-7961e2cc",
+        "description": "Mop floors",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 20,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.685378744699624
+    },
+    {
+        "id": "767bd890f9aa991f-4924b71f-21c19f32",
+        "description": "Change bed sheets",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "49bea7866ae1f549-da8f9d57-91aadbd7",
+        "description": "Wash bed sheets",
+        "frequency": 15,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "7ad5eabce2a6e506-06150bb6-2d9ea9d3",
+        "description": "Wipe washing machine and clean filters",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "8bae4bd0cab56485-e24214a5-b9f60806",
+        "description": "Sort dirty laundry",
+        "frequency": 3,
+        "unit": "day",
+        "restrictions": {
+            "len": 2,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.27904557733733293
+    },
+    {
+        "id": "f6620bd1a2bbb31f-dc77d2b0-e412ac66",
+        "description": "Put cloths in drawer",
+        "frequency": 7,
+        "unit": "day",
+        "restrictions": {
+            "len": 15,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.6177856478686721
+    },
+    {
+        "id": "264c1d00441a1454-4636f229-b9c661af",
+        "description": "Organize study",
+        "frequency": 9,
+        "unit": "day",
+        "restrictions": {
+            "len": 15,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.6177856478686721
+    },
+    {
+        "id": "29dc98975efd74d3-44ec2354-4734b7bf",
+        "description": "Organize study closets, one shelf ",
+        "frequency": 5,
+        "unit": "day",
+        "restrictions": {
+            "len": 15,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.6177856478686721
+    },
+    {
+        "id": "ad90ed606775e048-0111f62d-199bc1db",
+        "description": "declutter clothes closet, one shelf",
+        "frequency": 8,
+        "unit": "day",
+        "restrictions": {
+            "len": 15,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.6177856478686721
+    },
+    {
+        "id": "a113decfd65ced25-409c03ce-94db73f2",
+        "description": "Clean kitchen table",
+        "frequency": 32,
+        "unit": "hour",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "0bfe246ac37de9d3-c309124c-be48b438",
+        "description": "Clean tv set",
+        "frequency": 10,
+        "unit": "day",
+        "restrictions": {
+            "len": 5,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.4068809865742902
+    },
+    {
+        "id": "e626e2d02c796575-355e7e63-dd8c9dea",
+        "description": "Trimming plants",
+        "frequency": 17,
+        "unit": "day",
+        "restrictions": {
+            "len": 15,
+            "tow": "any day",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.6177856478686721
+    },
+    {
+        "id": "5fd76455d9ae6cb7-3718945c-63ae68c2",
+        "description": "Dust and clean wall edges",
+        "frequency": 29,
+        "unit": "day",
+        "restrictions": {
+            "len": 15,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.6177856478686721
+    },
+    {
+        "id": "5cca4b63258b8121-1fccbe2b-c44f4232",
+        "description": "Empty the mailbox",
+        "frequency": 10,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "ff5cbf7074bcb7a7-36b6a7af-c7d64bfc",
+        "description": "Watering plants",
+        "frequency": 9,
+        "unit": "day",
+        "restrictions": {
+            "len": 15,
+            "tow": "any day",
+            "start": "10:00",
+            "end": "17:00"
+        },
+        "difficulty": 0.6177856478686721
+    },
+    {
+        "id": "79e13506e6c9eec3-48b7809b-89fa0fe7",
+        "description": "Clean shower drains",
+        "frequency": 2,
+        "unit": "day",
+        "restrictions": {
+            "len": 2,
+            "tow": "weekdays",
+            "start": "10:00",
+            "end": "23:00"
+        },
+        "difficulty": 0.27904557733733293
+    },
+    {
+        "id": "1b1c41ca50ac8fee-c17524bf-4bdd52fa",
+        "description": "Clean shower rug and curtain",
+        "frequency": 27,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekends",
+            "start": "10:00",
+            "end": "23:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "66f4e295153b0077-90a77722-cd0f0a04",
+        "description": "Wash cloths",
+        "frequency": 1,
+        "unit": "week",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "11:00",
+            "end": "12:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "89e9ad8dde8c8f3b-a6b4c70c-f72c7042",
+        "description": "Wash dishes",
+        "frequency": 2,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "17:00",
+            "end": "19:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "36e286d5542f9fc2-19b5553d-aedf7ced",
+        "description": "Clean shower walls and pipes",
+        "frequency": 12,
+        "unit": "day",
+        "restrictions": {
+            "len": 10,
+            "tow": "weekdays",
+            "start": "17:00",
+            "end": "23:00"
+        },
+        "difficulty": 0.5316794138653876
+    },
+    {
+        "id": "98adc988c85944b1-2a0b0451-fe8eb544",
+        "description": "Take out trash",
+        "frequency": 4,
+        "unit": "day",
+        "restrictions": {
+            "len": 20,
+            "tow": "weekdays",
+            "start": "18:00",
+            "end": "20:00"
+        },
+        "difficulty": 0.685378744699624
+    },
+    {
+        "id": "9f661d17770c1672-b2d2ec2f-4efca59c",
+        "description": "Clean kitchen floor",
+        "frequency": 6,
+        "unit": "day",
+        "restrictions": {
+            "len": 20,
+            "tow": "any day",
+            "start": "18:00",
+            "end": "20:00"
+        },
+        "difficulty": 0.685378744699624
+    }
+]

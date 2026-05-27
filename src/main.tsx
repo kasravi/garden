@@ -1,0 +1,31 @@
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import { registerSW } from 'virtual:pwa-register'
+import App from './App'
+import './index.css'
+
+async function resetDevServiceWorkers(): Promise<void> {
+  if (!('serviceWorker' in navigator)) {
+    return
+  }
+
+  const registrations = await navigator.serviceWorker.getRegistrations()
+  await Promise.all(registrations.map((registration) => registration.unregister()))
+
+  if ('caches' in window) {
+    const keys = await window.caches.keys()
+    await Promise.all(keys.map((key) => window.caches.delete(key)))
+  }
+}
+
+if (import.meta.env.DEV) {
+  void resetDevServiceWorkers()
+} else {
+  registerSW({ immediate: true })
+}
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)

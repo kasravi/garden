@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type TouchEvent } from 'react'
 import { formatCadence, getFeedCards, getWishHealth, MOOD_EMOJIS, timeAgo, toneLabel } from './engine'
 import { CONCEPT_KIND_LABELS } from './ontology'
-import { getRoomId, useCollaborativeState } from './collab.ts'
+import { getRoomId, roomIdFromGardenCode, useCollaborativeState } from './collab.ts'
 import { createInitialState } from './seed'
 import { SentenceSpinner } from './components/SentenceSpinner'
 import type {
@@ -824,8 +824,9 @@ function skipSentencePreview(skipFlow: SkipFlowState, categoryLabel: string | nu
 }
 
 function App() {
-  const initialState = useMemo(() => createInitialState(getRoomId()), [])
-  const { state, updateState, peerCount, connectionStatus, shareUrl } = useCollaborativeState(initialState)
+  const [currentRoomId, setCurrentRoomId] = useState(() => getRoomId())
+  const initialState = useMemo(() => createInitialState(currentRoomId), [currentRoomId])
+  const { state, updateState, peerCount, connectionStatus, roomCode, shareUrl, onlineUsers, lastConnectionError } = useCollaborativeState(initialState)
 
   const sharedConcepts = useMemo(() => state.concepts.filter((concept) => concept.scope === 'shared'), [state.concepts])
   const timeframeOptions = useMemo<TimeframeOption[]>(() => {
@@ -851,6 +852,7 @@ function App() {
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuSection, setMenuSection] = useState<MenuSection>('analytics')
+  const [roomCodeInput, setRoomCodeInput] = useState('')
   const deferredInstallPrompt = useRef<any>(null)
   const [canInstallPwa, setCanInstallPwa] = useState(false)
   const [taskComposerOpen, setTaskComposerOpen] = useState(false)
@@ -1139,6 +1141,10 @@ function App() {
     window.addEventListener('beforeinstallprompt', handler)
     return () => window.removeEventListener('beforeinstallprompt', handler)
   }, [])
+
+  useEffect(() => {
+    setRoomCodeInput(roomCode)
+  }, [roomCode])
 
   useEffect(() => {
     if (taskComposerOpen) {
@@ -2459,6 +2465,28 @@ function App() {
     showToast('Share link copied.')
   }
 
+  async function copyGardenCode(): Promise<void> {
+    await navigator.clipboard.writeText(roomCode)
+    showToast('Garden code copied.')
+  }
+
+  function connectToGarden(): void {
+    const cleaned = roomCodeInput.trim()
+    if (!cleaned) {
+      showToast('Enter a garden code first.')
+      return
+    }
+
+    const nextRoomId = roomIdFromGardenCode(cleaned)
+    const nextUrl = new URL(window.location.href)
+    nextUrl.searchParams.set('garden', cleaned.toLowerCase())
+    nextUrl.searchParams.set('sync', 'webrtc')
+    nextUrl.searchParams.delete('room')
+    window.history.pushState({}, '', nextUrl.toString())
+    setCurrentRoomId(nextRoomId)
+    showToast(`Connecting to garden ${cleaned.toLowerCase()}…`)
+  }
+
   const doneToday = useMemo(() => {
     const todayStart = new Date()
     todayStart.setHours(0, 0, 0, 0)
@@ -3348,8 +3376,24 @@ function App() {
             {menuSection === 'settings' && (
               <section className="panel-section">
                 <article className="soft-card">
-                  <h3>Room link</h3>
-                  <p className="subtle-text">Share the room. Others join and see shared tasks from their own perspective.</p>
+                  <h3>Garden connection</h3>
+                  <p className="subtle-text">Share the link or just send the garden code. Others can paste the code and press Connect.</p>
+                  <div className="form-grid compact-grid" style={{ marginBottom: 10 }}>
+                    <div>
+                      <label className="field-label">This garden code</label>
+                      <div className="share-row">
+                        <input className="text-input" readOnly value={roomCode} />
+                        <button className="secondary-btn" onClick={() => void copyGardenCode()}>Copy code</button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="field-label">Join a garden</label>
+                      <div className="share-row">
+                        <input className="text-input" value={roomCodeInput} onChange={(event) => setRoomCodeInput(event.target.value)} placeholder="garden code" />
+                        <button className="primary-btn" onClick={connectToGarden}>Connect</button>
+                      </div>
+                    </div>
+                  </div>
                   <div className="share-row">
                     <input className="text-input" readOnly value={shareUrl} />
                     <button className="secondary-btn" onClick={() => void copyShareLink()}>Copy</button>
@@ -3357,6 +3401,24 @@ function App() {
                   <div className="metrics-row">
                     <span className="metric-chip">status {connectionStatus}</span>
                     <span className="metric-chip">peers {peerCount}</span>
+                    <span className="metric-chip">online {onlineUsers.length}</span>
+                  </div>
+                  {lastConnectionError && (
+                    <p className="subtle-text" style={{ color: '#b91c1c', marginTop: 8 }}>
+                      Connection issue: {lastConnectionError}
+                    </p>
+                  )}
+                  <div className="concept-list" style={{ marginTop: 10 }}>
+                    {onlineUsers.length > 0 ? onlineUsers.map((user) => (
+                      <div key={user.id} className="concept-card" style={{ padding: '8px 10px' }}>
+                        <div className="task-head">
+                          <strong>{user.name}</strong>
+                          <span className="metric-chip">{user.isSelf ? 'you' : 'online'}</span>
+                        </div>
+                      </div>
+                    )) : (
+                      <p className="subtle-text">No one is online yet.</p>
+                    )}
                   </div>
                 </article>
 

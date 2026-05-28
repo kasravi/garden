@@ -9,9 +9,32 @@ type PersistedRoomState = {
   state: AppState
 }
 
+export type OnlineUser = {
+  id: string
+  name: string
+  isSelf: boolean
+}
+
 const DB_NAME = 'chores-garden'
 const STORE_NAME = 'roomState'
 const DB_VERSION = 1
+const DEFAULT_SIGNALING_SERVERS = [
+  'wss://y-webrtc-eu.fly.dev',
+  'wss://signaling.yjs.dev',
+]
+
+function normalizeGardenCode(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '')
+}
+
+export function roomIdFromGardenCode(code: string): string {
+  const normalized = normalizeGardenCode(code)
+  return normalized.startsWith('chores-') ? normalized : `chores-${normalized}`
+}
+
+export function gardenCodeFromRoomId(roomId: string): string {
+  return roomId.replace(/^chores-/, '')
+}
 
 function shouldEnableRealtimeSync(): boolean {
   const params = new URLSearchParams(window.location.search)
@@ -77,6 +100,12 @@ async function writePersistedState(roomId: string, state: AppState, updatedAt: n
 
 export function getRoomId(): string {
   const params = new URLSearchParams(window.location.search)
+  const gardenCode = params.get('garden')
+  if (gardenCode) {
+    const roomId = roomIdFromGardenCode(gardenCode)
+    window.localStorage.setItem('chores-room-id', roomId)
+    return roomId
+  }
   const fromUrl = params.get('room')
   if (fromUrl) {
     window.localStorage.setItem('chores-room-id', fromUrl)
@@ -95,7 +124,8 @@ export function getRoomId(): string {
 
 export function buildShareUrl(roomId: string): string {
   const next = new URL(window.location.href)
-  next.searchParams.set('room', roomId)
+  next.searchParams.set('garden', gardenCodeFromRoomId(roomId))
+  next.searchParams.delete('room')
   next.searchParams.set('sync', 'webrtc')
   return next.toString()
 }
@@ -105,13 +135,18 @@ export function useCollaborativeState(initialState: AppState): {
   updateState: (updater: (previous: AppState) => AppState) => void
   peerCount: number
   connectionStatus: string
+  roomCode: string
   shareUrl: string
+  onlineUsers: OnlineUser[]
+  lastConnectionError: string | null
 } {
   const roomId = initialState.space.roomId
   const realtimeEnabled = useMemo(() => shouldEnableRealtimeSync(), [])
   const [state, setState] = useState<AppState>(initialState)
   const [peerCount, setPeerCount] = useState(0)
   const [connectionStatus, setConnectionStatus] = useState<string>('loading')
+  const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([])
+  const [lastConnectionError, setLastConnectionError] = useState<string | null>(null)
   const stateRef = useRef<AppState>(initialState)
   const updatedAtRef = useRef(0)
   const bootstrappedRef = useRef(false)
@@ -121,7 +156,7 @@ export function useCollaborativeState(initialState: AppState): {
     const doc = new Y.Doc()
     const root = doc.getMap('chores-root')
     const provider = new WebrtcProvider(roomId, doc, {
-      signaling: ['wss://signaling.yjs.dev'],
+      signaling: DEFAULT_SIGNALING_SERVERS,
       maxConns: 8,
       filterBcConns: true,
     })
@@ -130,6 +165,11 @@ export function useCollaborativeState(initialState: AppState): {
 
   useEffect(() => {
     let active = true
+    bootstrappedRef.current = false
+    setConnectionStatus('loading')
+    setPeerCount(0)
+    setOnlineUsers([])
+    setLastConnectionError(null)
 
     const applyState = (nextState: AppState, updatedAt: number) => {
       const cloned = cloneState(nextState)
@@ -141,14 +181,65 @@ export function useCollaborativeState(initialState: AppState): {
       })
     }
 
+    const syncOnlineUsers = () => {
+      if (!active) return
+      if (!collab) {
+        const localUser = stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)
+        setOnlineUsers(localUser ? [{ id: localUser.id, name: localUser.name, isSelf: true }] : [])
+        setPeerCount(0)
+        return
+      }
+
+      const selfClientId = collab.provider.awareness.clientID
+      const entries = Array.from(collab.provider.awareness.getStates().entries())
+      const seen = new Set<string>()
+      const users: OnlineUser[] = entries.map(([clientId, awarenessState]) => {
+        const awarenessUser = awarenessState?.user as { name?: string; id?: string } | undefined
+        const id = awarenessUser?.id ?? String(clientId)
+        const name = awarenessUser?.name ?? 'Someone'
+        seen.add(id)
+        return { id, name, isSelf: clientId === selfClientId }
+      })
+
+      const localSelectedUser = stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)
+      if (localSelectedUser && !seen.has(localSelectedUser.id)) {
+        users.unshift({ id: localSelectedUser.id, name: localSelectedUser.name, isSelf: true })
+      }
+
+      setOnlineUsers(users)
+      setPeerCount(Math.max(0, users.filter((user) => !user.isSelf).length))
+    }
+
     const updatePeers = () => {
-      if (!active || !collab) return
-      setPeerCount(Math.max(0, collab.provider.awareness.getStates().size - 1))
+      if (!active) return
+      syncOnlineUsers()
     }
 
     const handleStatus = (event: { connected: boolean }) => {
       if (!active) return
       setConnectionStatus(event.connected ? 'connected' : 'connecting')
+    }
+
+    const signalingListeners: Array<{ conn: any; onConnect: () => void; onDisconnect: (event: { error?: unknown }) => void }> = []
+
+    const attachSignalingListeners = () => {
+      if (!collab) return
+      collab.provider.signalingConns.forEach((conn: any) => {
+        const onConnect = () => {
+          if (!active) return
+          setLastConnectionError(null)
+        }
+        const onDisconnect = (event: { error?: unknown }) => {
+          if (!active) return
+          const message = event?.error instanceof Error
+            ? event.error.message
+            : `Could not reach signaling server: ${conn.url}`
+          setLastConnectionError(message)
+        }
+        conn.on('connect', onConnect)
+        conn.on('disconnect', onDisconnect)
+        signalingListeners.push({ conn, onConnect, onDisconnect })
+      })
     }
 
     const syncFromDoc = () => {
@@ -186,7 +277,9 @@ export function useCollaborativeState(initialState: AppState): {
         collab.root.observe(syncFromDoc)
         collab.provider.awareness.on('change', updatePeers)
         collab.provider.on('status', handleStatus)
+        attachSignalingListeners()
         collab.provider.awareness.setLocalStateField('user', {
+          id: stateRef.current.selectedUserId,
           name: stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)?.name ?? 'Someone',
         })
 
@@ -212,6 +305,7 @@ export function useCollaborativeState(initialState: AppState): {
         updatedAtRef.current = Date.now()
         setState(cloneState(initialState))
         setConnectionStatus(collab ? 'connecting' : 'local-only')
+        syncOnlineUsers()
       }
     }
 
@@ -220,6 +314,10 @@ export function useCollaborativeState(initialState: AppState): {
     return () => {
       active = false
       if (collab) {
+        signalingListeners.forEach(({ conn, onConnect, onDisconnect }) => {
+          conn.off('connect', onConnect)
+          conn.off('disconnect', onDisconnect)
+        })
         collab.root.unobserve(syncFromDoc)
         collab.provider.awareness.off('change', updatePeers)
         collab.provider.off('status', handleStatus)
@@ -239,6 +337,10 @@ export function useCollaborativeState(initialState: AppState): {
       console.warn('[chores] Failed to persist updated state', error)
     })
     if (collab) {
+      collab.provider.awareness.setLocalStateField('user', {
+        id: next.selectedUserId,
+        name: next.users.find((person) => person.id === next.selectedUserId)?.name ?? 'Someone',
+      })
       collab.doc.transact(() => {
         collab.root.set('state', cloneState(next))
         collab.root.set('updatedAt', updatedAt)
@@ -251,6 +353,9 @@ export function useCollaborativeState(initialState: AppState): {
     updateState,
     peerCount,
     connectionStatus,
+    roomCode: gardenCodeFromRoomId(roomId),
     shareUrl: buildShareUrl(roomId),
+    onlineUsers,
+    lastConnectionError,
   }
 }

@@ -15,13 +15,33 @@ export type OnlineUser = {
   isSelf: boolean
 }
 
+type AwarenessUser = {
+  sessionId: string
+  profileId: string
+  name: string
+}
+
+type CollabSession = {
+  doc: Y.Doc
+  root: Y.Map<unknown>
+  provider: WebrtcProvider
+}
+
 const DB_NAME = 'chores-garden'
 const STORE_NAME = 'roomState'
 const DB_VERSION = 1
 const DEFAULT_SIGNALING_SERVERS = [
   'wss://y-webrtc-eu.fly.dev',
-  'wss://signaling.yjs.dev',
 ]
+const SESSION_STORAGE_KEY = 'chores-session-id'
+
+function getSessionId(): string {
+  const existing = window.sessionStorage.getItem(SESSION_STORAGE_KEY)
+  if (existing) return existing
+  const created = `session-${Math.random().toString(36).slice(2, 10)}`
+  window.sessionStorage.setItem(SESSION_STORAGE_KEY, created)
+  return created
+}
 
 function normalizeGardenCode(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '')
@@ -150,26 +170,31 @@ export function useCollaborativeState(initialState: AppState): {
   const stateRef = useRef<AppState>(initialState)
   const updatedAtRef = useRef(0)
   const bootstrappedRef = useRef(false)
-
-  const collab = useMemo(() => {
-    if (!realtimeEnabled) return null
-    const doc = new Y.Doc()
-    const root = doc.getMap('chores-root')
-    const provider = new WebrtcProvider(roomId, doc, {
-      signaling: DEFAULT_SIGNALING_SERVERS,
-      maxConns: 8,
-      filterBcConns: true,
-    })
-    return { doc, root, provider }
-  }, [realtimeEnabled, roomId])
+  const sessionIdRef = useRef(getSessionId())
+  const collabRef = useRef<CollabSession | null>(null)
 
   useEffect(() => {
     let active = true
+    let collab: CollabSession | null = null
     bootstrappedRef.current = false
     setConnectionStatus('loading')
     setPeerCount(0)
     setOnlineUsers([])
     setLastConnectionError(null)
+
+    if (realtimeEnabled) {
+      const doc = new Y.Doc()
+      const root = doc.getMap('chores-root')
+      const provider = new WebrtcProvider(roomId, doc, {
+        signaling: DEFAULT_SIGNALING_SERVERS,
+        maxConns: 8,
+        filterBcConns: true,
+      })
+      collab = { doc, root, provider }
+      collabRef.current = collab
+    } else {
+      collabRef.current = null
+    }
 
     const applyState = (nextState: AppState, updatedAt: number) => {
       const cloned = cloneState(nextState)
@@ -185,25 +210,35 @@ export function useCollaborativeState(initialState: AppState): {
       if (!active) return
       if (!collab) {
         const localUser = stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)
-        setOnlineUsers(localUser ? [{ id: localUser.id, name: localUser.name, isSelf: true }] : [])
+        setOnlineUsers(localUser ? [{ id: sessionIdRef.current, name: localUser.name, isSelf: true }] : [])
         setPeerCount(0)
         return
       }
 
       const selfClientId = collab.provider.awareness.clientID
       const entries = Array.from(collab.provider.awareness.getStates().entries())
-      const seen = new Set<string>()
-      const users: OnlineUser[] = entries.map(([clientId, awarenessState]) => {
-        const awarenessUser = awarenessState?.user as { name?: string; id?: string } | undefined
-        const id = awarenessUser?.id ?? String(clientId)
-        const name = awarenessUser?.name ?? 'Someone'
-        seen.add(id)
-        return { id, name, isSelf: clientId === selfClientId }
-      })
+      const seenSessions = new Set<string>()
+      const users: OnlineUser[] = []
+
+      for (const [clientId, awarenessState] of entries) {
+        const awarenessUser = awarenessState?.user as Partial<AwarenessUser> | undefined
+        const sessionId = awarenessUser?.sessionId ?? `client-${clientId}`
+        if (seenSessions.has(sessionId)) continue
+        seenSessions.add(sessionId)
+
+        const baseName = awarenessUser?.name?.trim() || 'Someone'
+        const suffix = baseName.toLowerCase() === 'me' ? ` · ${sessionId.slice(-4)}` : ''
+        users.push({
+          id: sessionId,
+          name: `${baseName}${suffix}`,
+          isSelf: clientId === selfClientId,
+        })
+      }
 
       const localSelectedUser = stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)
-      if (localSelectedUser && !seen.has(localSelectedUser.id)) {
-        users.unshift({ id: localSelectedUser.id, name: localSelectedUser.name, isSelf: true })
+      if (localSelectedUser && !seenSessions.has(sessionIdRef.current)) {
+        const suffix = localSelectedUser.name.toLowerCase() === 'me' ? ` · ${sessionIdRef.current.slice(-4)}` : ''
+        users.unshift({ id: sessionIdRef.current, name: `${localSelectedUser.name}${suffix}`, isSelf: true })
       }
 
       setOnlineUsers(users)
@@ -279,7 +314,8 @@ export function useCollaborativeState(initialState: AppState): {
         collab.provider.on('status', handleStatus)
         attachSignalingListeners()
         collab.provider.awareness.setLocalStateField('user', {
-          id: stateRef.current.selectedUserId,
+          sessionId: sessionIdRef.current,
+          profileId: stateRef.current.selectedUserId,
           name: stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)?.name ?? 'Someone',
         })
 
@@ -313,19 +349,19 @@ export function useCollaborativeState(initialState: AppState): {
 
     return () => {
       active = false
-      if (collab) {
+        if (collab) {
         signalingListeners.forEach(({ conn, onConnect, onDisconnect }) => {
           conn.off('connect', onConnect)
           conn.off('disconnect', onDisconnect)
         })
-        collab.root.unobserve(syncFromDoc)
-        collab.provider.awareness.off('change', updatePeers)
-        collab.provider.off('status', handleStatus)
-        collab.provider.destroy()
-        collab.doc.destroy()
+          collab.provider.awareness.off('change', updatePeers)
+          collab.provider.off('status', handleStatus)
+          collab.provider.destroy()
+          collab.doc.destroy()
+          collabRef.current = null
       }
     }
-  }, [collab, initialState, roomId])
+  }, [initialState, realtimeEnabled, roomId])
 
   const updateState = (updater: (previous: AppState) => AppState) => {
     const next = updater(cloneState(stateRef.current))
@@ -336,9 +372,11 @@ export function useCollaborativeState(initialState: AppState): {
     void writePersistedState(roomId, next, updatedAt).catch((error) => {
       console.warn('[chores] Failed to persist updated state', error)
     })
+    const collab = collabRef.current
     if (collab) {
       collab.provider.awareness.setLocalStateField('user', {
-        id: next.selectedUserId,
+        sessionId: sessionIdRef.current,
+        profileId: next.selectedUserId,
         name: next.users.find((person) => person.id === next.selectedUserId)?.name ?? 'Someone',
       })
       collab.doc.transact(() => {

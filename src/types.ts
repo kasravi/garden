@@ -133,6 +133,10 @@ export interface TaskDefinition {
     focus: Scalar
   }
   sharedConceptIds: ConceptId[]
+  sharedContextLinks?: Array<{
+    conceptId: ConceptId
+    qualifier: string
+  }>
   defaultTimePreference?: TimePreference
   archivedAt?: IsoDateTime
   sourceTaskId?: string

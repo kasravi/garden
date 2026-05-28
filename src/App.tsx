@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type TouchEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type TouchEvent } from 'react'
 import { formatCadence, getFeedCards, getWishHealth, MOOD_EMOJIS, timeAgo, toneLabel } from './engine'
 import { CONCEPT_KIND_LABELS } from './ontology'
 import { getRoomId, roomIdFromGardenCode, useCollaborativeState } from './collab.ts'
@@ -21,7 +21,12 @@ import type {
 type MenuSection = 'analytics' | 'sharing' | 'language' | 'heuristics' | 'settings'
 type ScalarField = 'importance' | 'grandness' | 'subjectiveTime' | 'focus'
 type SkipScope = 'today-only' | 'special-task' | 'sort-of-task'
+type TaskComposerOptionalPath = 'details' | 'categories' | 'context' | null
 type TaskComposerStepId = 'name' | 'cadence' | 'importance' | 'grandness' | 'time' | 'focus' | 'timing' | 'window' | 'review'
+type TaskComposerUiStepId = 'name' | 'mode' | 'frequency-starter' | 'frequency-count' | 'count' | 'timeframe' | 'timeframe-qualifier' | 'details' | 'importance' | 'difficulty' | 'time' | 'focus' | 'timing' | 'window' | 'category' | 'context'
+type TaskAdjustmentUiStepId = 'summary' | 'title' | 'mode' | 'frequency-starter' | 'frequency-count' | 'count' | 'timeframe' | 'timeframe-qualifier' | 'importance' | 'difficulty' | 'time' | 'focus' | 'category' | 'context' | 'notes'
+const ADJUSTMENT_DESCRIPTION_STEPS: TaskAdjustmentUiStepId[] = ['title', 'mode', 'frequency-starter', 'frequency-count', 'count', 'timeframe', 'timeframe-qualifier']
+const ADJUSTMENT_DETAIL_STEPS: TaskAdjustmentUiStepId[] = ['importance', 'difficulty', 'time', 'focus']
 
 interface TaskCadenceOption {
   every: number
@@ -184,6 +189,7 @@ interface FrequencyStarterOption {
 
 type SentenceCaretPart = 'name' | 'mode' | 'count' | 'one-time-frame' | 'frequency-count' | 'frequency-starter' | 'timeframe-qualifier' | 'timeframe'
 type SkipSentenceCaret = 'scope' | 'discomfort' | 'category' | 'specifier' | 'concept'
+type SkipUiStep = 'scope' | 'questions' | 'why' | 'categories' | 'when'
 type SubjectiveCategory = 'importance' | 'difficulty' | 'time' | 'focus'
 
 const LOCAL_PROFILE_NAME_STORAGE_KEY = 'chores-local-profile-name'
@@ -375,7 +381,7 @@ function expressionNodeToClauses(node: import('./types').ExpressionNode | undefi
   return { clauses: singleNodeToClauses(node), connector: 'and' }
 }
 
-const DISCOMFORT_OPTIONS = ['big', 'draining', 'messy', 'boring', 'interruptive']
+const DISCOMFORT_OPTIONS = ['too long', 'not that important', 'too much effort', 'too draining', 'too messy']
 const SKIP_SCOPE_OPTIONS: Array<{ id: SkipScope; label: string }> = [
   { id: 'today-only', label: 'this task this time' },
   { id: 'special-task', label: 'this special task' },
@@ -640,7 +646,9 @@ function taskAdjustmentFromState(state: AppState, userTaskProfileId: string): Ta
     subjectiveTime: closestChoice('time', profile.subjectiveTime),
     focus: closestChoice('focus', profile.focus),
     selectedCategoryIds: categoryIds,
-    preferredContexts: (task.sharedConceptIds ?? []).map((id) => ({ conceptId: id, qualifier: 'during' })),
+    preferredContexts: task.sharedContextLinks?.length
+      ? task.sharedContextLinks.map((entry) => ({ conceptId: entry.conceptId, qualifier: entry.qualifier }))
+      : (task.sharedConceptIds ?? []).map((id) => ({ conceptId: id, qualifier: 'during' })),
     contextConnector: 'and',
     notes: profile.notes,
   }
@@ -699,7 +707,7 @@ function defaultSkipFlow(userTaskProfileId: string, logId: string): SkipFlowStat
     userTaskProfileId,
     logId,
     scope: 'today-only',
-    discomfort: 'draining',
+    discomfort: 'too draining',
     categoryIds: [],
     categoryCursorId: '',
     newCategoryLabel: '',
@@ -809,6 +817,365 @@ function buildTaskDefinitionSentence(draft: TaskSentenceDraft, timeframeOptions:
   return `${base}${timePart}.`
 }
 
+function frequencyCountStepLabel(option: FrequencyCountOption): string {
+  return option.id === '1' ? 'every' : `every ${option.label}`
+}
+
+function everyProgressPhrase(frequencyStarter: FrequencyStarterOption['id'], frequencyCount: FrequencyCountOption['id'], completed: Set<string>): string {
+  if (!completed.has('frequency-starter')) return 'every …'
+  if (!completed.has('frequency-count') || frequencyCount === '1') return `every ${frequencyStarter}`
+  const frequencyLabel = FREQUENCY_COUNT_OPTIONS.find((option) => option.id === frequencyCount)?.label ?? frequencyCount
+  return `every ${frequencyLabel} ${frequencyStarter}`
+}
+
+function taskComposerFlowSteps(draft: TaskSentenceDraft, optionalPath: TaskComposerOptionalPath): TaskComposerUiStepId[] {
+  const steps: TaskComposerUiStepId[] = ['name', 'mode']
+  if (draft.sentenceMode === 'every') {
+    steps.push('frequency-starter', 'frequency-count')
+  } else if (['at-least', 'exactly', 'more-than'].includes(draft.sentenceMode)) {
+    steps.push('count')
+  }
+  steps.push('details')
+  if (optionalPath === 'details') {
+    steps.push('importance', 'difficulty', 'time', 'focus')
+  } else if (optionalPath === 'categories') {
+    steps.push('category')
+  } else if (optionalPath === 'context') {
+    steps.push('context')
+  }
+  return steps
+}
+
+function taskAdjustmentFlowSteps(adjustment: TaskAdjustmentState): TaskAdjustmentUiStepId[] {
+  const steps: TaskAdjustmentUiStepId[] = ['summary', 'title', 'mode']
+  if (adjustment.sentenceMode === 'every') {
+    steps.push('frequency-starter', 'frequency-count', 'timeframe')
+  } else if (['at-least', 'exactly', 'more-than'].includes(adjustment.sentenceMode)) {
+    steps.push('count', 'timeframe')
+  } else if (adjustment.sentenceMode === 'one-time') {
+    steps.push('timeframe')
+  }
+  if (adjustment.sentenceMode !== 'at-one-point' && allowedTimeframeQualifiers(adjustment.timeframe).some((option) => option !== 'none')) {
+    steps.push('timeframe-qualifier')
+  }
+  steps.push('importance', 'difficulty', 'time', 'focus', 'category', 'context', 'notes')
+  return steps
+}
+
+function progressTimeframePhrase(timeframeId: string, qualifier: TimeframeQualifierOption['id'], timeframeOptions: TimeframeOption[], completed: Set<string>): string {
+  if (!completed.has('timeframe')) return ''
+  const timeframeText = timeframeOptions.find((option) => option.id === timeframeId)?.label ?? 'in general'
+  if (completed.has('timeframe-qualifier') && qualifier !== 'none') {
+    return `${qualifier} ${timeframeText}`
+  }
+  return timeframeText
+}
+
+type PreviewStepId = 'name' | 'title' | 'mode' | 'frequency-starter' | 'frequency-count' | 'count' | 'timeframe' | 'timeframe-qualifier' | 'importance' | 'difficulty' | 'time' | 'focus' | 'timing' | 'window'
+
+function sentenceChip(text: string, key: string, onClick?: () => void): ReactNode {
+  if (!onClick) return <span key={key} className="entry-sentence-chip">{text}</span>
+  return <button key={key} type="button" className="entry-sentence-chip entry-sentence-chip-btn" onClick={onClick}>{text}</button>
+}
+
+function renderSubjectiveProgressSentence(
+  reached: Set<string>,
+  values: {
+    importance: string
+    difficulty: string
+    time: string
+    focus: string
+  },
+  renderChip: (step: PreviewStepId, text: string, key: string) => ReactNode,
+): ReactNode {
+  if (!reached.has('importance')) return null
+  return (
+    <>
+      {' '}
+      <span>I think it is </span>
+      {renderChip('importance', values.importance, 'importance')}
+      {reached.has('difficulty') && (
+        <>
+          <span>, </span>
+          {renderChip('difficulty', values.difficulty, 'difficulty')}
+        </>
+      )}
+      {reached.has('time') && (
+        <>
+          <span>, </span>
+          {renderChip('time', values.time, 'time')}
+        </>
+      )}
+      {reached.has('focus') && (
+        <>
+          <span>, and needs </span>
+          {renderChip('focus', values.focus, 'focus')}
+        </>
+      )}
+      <span>.</span>
+    </>
+  )
+}
+
+function renderCadenceProgress(
+  options: {
+    sentenceMode: TaskSentenceModeOption['id']
+    frequencyStarter: FrequencyStarterOption['id']
+    frequencyCount: FrequencyCountOption['id']
+    timeframe: string
+    timeframeQualifier: TimeframeQualifierOption['id']
+    countChoice: CountOption['id']
+  },
+  timeframeOptions: TimeframeOption[],
+  reached: Set<string>,
+  renderChip: (step: PreviewStepId, text: string, key: string) => ReactNode,
+): ReactNode {
+  if (!reached.has('mode')) return null
+  const timeframeText = timeframeOptions.find((option) => option.id === options.timeframe)?.label ?? 'in general'
+
+  if (options.sentenceMode === 'at-one-point') {
+    return <>{' '}{renderChip('mode', 'at one point', 'mode')}</>
+  }
+
+  if (options.sentenceMode === 'every') {
+    return (
+      <>
+        {' '}
+        {renderChip('mode', 'every', 'every-mode')}
+        {reached.has('frequency-count') && options.frequencyCount !== '1' && (
+          <>
+            {' '}
+            {renderChip('frequency-count', FREQUENCY_COUNT_OPTIONS.find((option) => option.id === options.frequencyCount)?.label ?? options.frequencyCount, 'every-count')}
+          </>
+        )}
+        {reached.has('frequency-starter') && (
+          <>
+            {' '}
+            {renderChip('frequency-starter', options.frequencyStarter, 'every-starter')}
+          </>
+        )}
+        {reached.has('timeframe') && (
+          <>
+            <span>, </span>
+            {reached.has('timeframe-qualifier') && options.timeframeQualifier !== 'none' && (
+              <>
+                {renderChip('timeframe-qualifier', options.timeframeQualifier, 'every-qualifier')}
+                {' '}
+              </>
+            )}
+            {renderChip('timeframe', timeframeText, 'every-timeframe')}
+          </>
+        )}
+      </>
+    )
+  }
+
+  if (options.sentenceMode === 'one-time') {
+    return (
+      <>
+        {' '}
+        {renderChip('mode', 'one time', 'one-time-mode')}
+        {reached.has('timeframe') && (
+          <>
+            {' '}
+            {reached.has('timeframe-qualifier') && options.timeframeQualifier !== 'none' && (
+              <>
+                {renderChip('timeframe-qualifier', options.timeframeQualifier, 'one-time-qualifier')}
+                {' '}
+              </>
+            )}
+            {renderChip('timeframe', timeframeText, 'one-time-timeframe')}
+          </>
+        )}
+      </>
+    )
+  }
+
+  return (
+    <>
+      {' '}
+      {renderChip('mode', TASK_SENTENCE_MODE_OPTIONS.find((option) => option.id === options.sentenceMode)?.label ?? options.sentenceMode, 'count-mode')}
+      {' '}
+      {renderChip('count', reached.has('count') ? options.countChoice : '…', 'count-value')}
+      <span> times</span>
+      {reached.has('timeframe') && (
+        <>
+          <span>, </span>
+          {reached.has('timeframe-qualifier') && options.timeframeQualifier !== 'none' && (
+            <>
+              {renderChip('timeframe-qualifier', options.timeframeQualifier, 'count-qualifier')}
+              {' '}
+            </>
+          )}
+          {renderChip('timeframe', timeframeText, 'count-timeframe')}
+        </>
+      )}
+    </>
+  )
+}
+
+function renderTaskComposerProgressSentence(
+  draft: TaskSentenceDraft,
+  timeframeOptions: TimeframeOption[],
+  flow: TaskComposerUiStepId[],
+  stepIndex: number,
+  subjectiveSelections: Record<SubjectiveCategory, SubjectiveChoiceOption>,
+  hasDetailSummary: boolean,
+  selectedCategories: string[],
+  preferredContexts: Array<{ conceptId: string; qualifier: string }>,
+  concepts: CommonConcept[],
+  onStepClick: (stepIndex: number) => void,
+  onOptionalPathClick: (path: Exclude<TaskComposerOptionalPath, null>) => void,
+): ReactNode {
+  const reached = new Set<string>(flow.slice(0, Math.max(0, stepIndex + 1)))
+  if (stepIndex === 0 && draft.actionText.trim()) {
+    reached.add('name')
+  }
+  const renderChip = (step: PreviewStepId, text: string, key: string) => {
+    const targetIndex = taskComposerFlowStepIndex(flow, step)
+    return sentenceChip(text, key, targetIndex >= 0 ? () => onStepClick(targetIndex) : undefined)
+  }
+  return (
+    <>
+      <span>I want to </span>
+      {renderChip('name', draft.actionText.trim() || '…', 'task-name')}
+      {renderCadenceProgress(draft, timeframeOptions, reached, renderChip)}
+      {reached.has('timing') && draft.timeSensitive && (
+        <>
+          <span>, only when it is </span>
+          {renderChip(reached.has('window') ? 'window' : 'timing', reached.has('window') ? `${draft.dayGroup} between ${draft.start} and ${draft.end}` : 'inside a preferred window', 'timing')}
+        </>
+      )}
+      <span>.</span>
+      {(reached.has('importance') || hasDetailSummary) && renderSubjectiveProgressSentence(new Set(['importance', 'difficulty', 'time', 'focus']), {
+        importance: subjectiveSelections.importance.label,
+        difficulty: subjectiveSelections.difficulty.label,
+        time: subjectiveSelections.time.label,
+        focus: subjectiveSelections.focus.label,
+      }, (step, text, key) => sentenceChip(text, key, () => onOptionalPathClick('details')))}
+      {selectedCategories.length > 0 && (
+        <>
+          {' '}
+          <span>In </span>
+          {selectedCategories.map((category, index) => (
+            <span key={`category-wrap-${category}`}>
+              {index > 0 && <span>, </span>}
+              {sentenceChip(category, `category-${category}`, () => onOptionalPathClick('categories'))}
+            </span>
+          ))}
+          <span>.</span>
+        </>
+      )}
+      {preferredContexts.length > 0 && (
+        <>
+          {' '}
+          <span>With </span>
+          {preferredContexts.map((context, index) => {
+            const concept = concepts.find((entry) => entry.id === context.conceptId)
+            const label = concept ? `${context.qualifier} ${concept.label}` : `${context.qualifier} context`
+            return (
+              <span key={`context-wrap-${context.conceptId}-${context.qualifier}-${index}`}>
+                {index > 0 && <span>, </span>}
+                {sentenceChip(label, `context-${context.conceptId}-${context.qualifier}-${index}`, () => onOptionalPathClick('context'))}
+              </span>
+            )
+          })}
+          <span>.</span>
+        </>
+      )}
+    </>
+  )
+}
+
+function renderTaskAdjustmentProgressSentence(
+  adjustment: TaskAdjustmentState,
+  timeframeOptions: TimeframeOption[],
+  flow: TaskAdjustmentUiStepId[],
+  stepIndex: number,
+  selectedCategoryLabels: string[],
+  concepts: CommonConcept[],
+  onStepClick: (step: Exclude<TaskAdjustmentUiStepId, 'summary'>) => void,
+): ReactNode {
+  const reached = stepIndex === 0 ? new Set<string>(flow.slice(1)) : new Set<string>(flow.slice(0, Math.max(0, stepIndex + 1)))
+  const cadenceReached = new Set(reached)
+  if (stepIndex === 0 && adjustment.title.trim()) {
+    reached.add('title')
+  }
+  if (adjustment.timeframe === 'in-general' && adjustment.timeframeQualifier === 'none') {
+    cadenceReached.delete('timeframe')
+    cadenceReached.delete('timeframe-qualifier')
+  }
+  const renderChip = (step: PreviewStepId, text: string, key: string) => {
+    const targetIndex = taskAdjustmentFlowStepIndex(flow, step)
+    return sentenceChip(text, key, targetIndex >= 0 ? () => onStepClick(step as Exclude<TaskAdjustmentUiStepId, 'summary'>) : undefined)
+  }
+  return (
+    <>
+      <span>I want to </span>
+      {renderChip('title', adjustment.title.trim() || '…', 'adjust-title')}
+      {renderCadenceProgress(adjustment, timeframeOptions, cadenceReached, renderChip)}
+      <span>.</span>
+      {renderSubjectiveProgressSentence(reached, {
+        importance: SUBJECTIVE_OPTIONS_BY_CATEGORY.importance.find((option) => option.id === adjustment.importance)?.label ?? 'important',
+        difficulty: SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty.find((option) => option.id === adjustment.grandness)?.label ?? 'ok',
+        time: SUBJECTIVE_OPTIONS_BY_CATEGORY.time.find((option) => option.id === adjustment.subjectiveTime)?.label ?? 'medium',
+        focus: SUBJECTIVE_OPTIONS_BY_CATEGORY.focus.find((option) => option.id === adjustment.focus)?.label ?? 'some',
+      }, renderChip)}
+      {selectedCategoryLabels.length > 0 && (
+        <>
+          {' '}
+          <span>In </span>
+          {selectedCategoryLabels.map((category, index) => (
+            <span key={`adjust-category-wrap-${category}`}>
+              {index > 0 && <span>, </span>}
+              {sentenceChip(category, `adjust-category-${category}`, () => onStepClick('category'))}
+            </span>
+          ))}
+          <span>.</span>
+        </>
+      )}
+      {adjustment.preferredContexts.length > 0 && (
+        <>
+          {' '}
+          <span>With </span>
+          {adjustment.preferredContexts.map((context, index) => {
+            const concept = concepts.find((entry) => entry.id === context.conceptId)
+            const label = concept ? `${context.qualifier} ${concept.label}` : `${context.qualifier} context`
+            return (
+              <span key={`adjust-context-wrap-${context.conceptId}-${context.qualifier}-${index}`}>
+                {index > 0 && <span>, </span>}
+                {sentenceChip(label, `adjust-context-${context.conceptId}-${context.qualifier}-${index}`, () => onStepClick('context'))}
+              </span>
+            )
+          })}
+          <span>.</span>
+        </>
+      )}
+    </>
+  )
+}
+
+function taskComposerFlowStepIndex(flow: TaskComposerUiStepId[], step: PreviewStepId): number {
+  return flow.indexOf(step as TaskComposerUiStepId)
+}
+
+function taskAdjustmentFlowStepIndex(flow: TaskAdjustmentUiStepId[], step: PreviewStepId): number {
+  return flow.indexOf(step as TaskAdjustmentUiStepId)
+}
+
+function taskAdjustmentRouteStep(step: Exclude<TaskAdjustmentUiStepId, 'summary'>, adjustment: TaskAdjustmentState): TaskAdjustmentUiStepId {
+  if (step === 'frequency-starter' || step === 'frequency-count') {
+    return adjustment.sentenceMode === 'every' ? step : 'mode'
+  }
+  if (step === 'count') {
+    return ['at-least', 'exactly', 'more-than'].includes(adjustment.sentenceMode) ? 'count' : 'mode'
+  }
+  if (step === 'timeframe' || step === 'timeframe-qualifier') {
+    return adjustment.sentenceMode === 'at-one-point' ? 'mode' : step
+  }
+  return step
+}
+
 function visibleSentenceParts(showTaskCadenceTeaser: boolean, draft: TaskSentenceDraft): SentenceCaretPart[] {
   const parts: SentenceCaretPart[] = ['name']
   if (!showTaskCadenceTeaser) return parts
@@ -840,14 +1207,35 @@ function comfortSentence(skipFlow: SkipFlowState, concepts: CommonConcept[]): st
   return concept ? `${skipFlow.contextSpecifier} ${concept.label.toLowerCase()}` : 'in a different context'
 }
 
-function skipSentencePreview(skipFlow: SkipFlowState, categoryLabel: string | null, concepts: CommonConcept[]): string {
+function skipSentencePreview(skipFlow: SkipFlowState, categoryLabel: string | null, concepts: CommonConcept[], answeredSections: Set<'why' | 'categories' | 'when'> = new Set()): string {
   const selectedCategories = (categoryLabel ?? '').split(',').map((label) => label.trim()).filter(Boolean)
   if (skipFlow.scope === 'special-task') {
-    return `I don't want to do this special task because it feels ${skipFlow.discomfort}.${skipFlow.conceptId ? ` It is easier ${comfortSentence(skipFlow, concepts)}.` : ''}${skipFlow.extraNote.trim() ? ` ${skipFlow.extraNote.trim()}` : ''}`
+    let sentence = `I don't want to do this special task`
+    if (answeredSections.has('why')) {
+      sentence += ` because it feels ${skipFlow.discomfort}`
+    }
+    sentence += '.'
+    if (answeredSections.has('when') && skipFlow.conceptId) {
+      sentence += ` It would fit better ${comfortSentence(skipFlow, concepts)}.`
+    }
+    if (skipFlow.extraNote.trim()) {
+      sentence += ` ${skipFlow.extraNote.trim()}`
+    }
+    return sentence
   }
   if (skipFlow.scope === 'sort-of-task') {
-    const categoryPart = selectedCategories.length ? selectedCategories.join(', ') : (categoryLabel || 'this category')
-    return `I don't want to do this sort of tasks because it feels ${skipFlow.discomfort}. I feel the same with all tasks in ${categoryPart} categories.${skipFlow.conceptId ? ` It is easier ${comfortSentence(skipFlow, concepts)}.` : ''}`
+    let sentence = `I don't want to do this sort of tasks`
+    if (answeredSections.has('why')) {
+      sentence += ` because it feels ${skipFlow.discomfort}`
+    }
+    sentence += '.'
+    if (answeredSections.has('categories') && selectedCategories.length) {
+      sentence += ` I feel the same with tasks in ${selectedCategories.join(', ')}.`
+    }
+    if (answeredSections.has('when') && skipFlow.conceptId) {
+      sentence += ` They would fit better ${comfortSentence(skipFlow, concepts)}.`
+    }
+    return sentence
   }
   if (skipFlow.scope === 'today-only') {
     return `I don't want to do this task this time${skipFlow.extraNote.trim() ? ` because ${skipFlow.extraNote.trim()}` : '.'}`
@@ -891,6 +1279,8 @@ function App() {
   const deferredInstallPrompt = useRef<any>(null)
   const [canInstallPwa, setCanInstallPwa] = useState(false)
   const [taskComposerOpen, setTaskComposerOpen] = useState(false)
+  const [taskComposerUiStepIndex, setTaskComposerUiStepIndex] = useState(0)
+  const [taskComposerOptionalPath, setTaskComposerOptionalPath] = useState<TaskComposerOptionalPath>(null)
   const [taskDraft, setTaskDraft] = useState<TaskSentenceDraft>(() => defaultTaskDraft())
   const [debouncedTaskName, setDebouncedTaskName] = useState('')
   const [taskSentenceModeIndex, setTaskSentenceModeIndex] = useState(0)
@@ -915,6 +1305,12 @@ function App() {
   const [selectedCategoryTags, setSelectedCategoryTags] = useState<string[]>([])
   const [categorySuggestionIndex, setCategorySuggestionIndex] = useState(0)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  const [composerContextInput, setComposerContextInput] = useState('')
+  const [composerPendingContextId, setComposerPendingContextId] = useState<string | null>(null)
+  const [composerContextQualifier, setComposerContextQualifier] = useState('during')
+  const [composerContextPickerOpen, setComposerContextPickerOpen] = useState(false)
+  const [composerContextSuggestionIndex, setComposerContextSuggestionIndex] = useState(0)
+  const [composerPreferredContexts, setComposerPreferredContexts] = useState<Array<{ conceptId: string; qualifier: string }>>([])
   const [taskInputWidthPx, setTaskInputWidthPx] = useState(220)
   const [personDraft, setPersonDraft] = useState<PersonDraft>(() => {
     const draft = defaultPersonDraft()
@@ -926,15 +1322,23 @@ function App() {
   const [doneFlow, setDoneFlow] = useState<DoneFlowState | null>(null)
   const [doneNoteOpen, setDoneNoteOpen] = useState(false)
   const [skipFlow, setSkipFlow] = useState<SkipFlowState | null>(null)
-  const [skipRevealedSections, setSkipRevealedSections] = useState<Set<'why' | 'what' | 'when'>>(new Set())
+  const [skipRevealedSections, setSkipRevealedSections] = useState<Set<'why' | 'categories' | 'when'>>(new Set())
+  const [skipUiStep, setSkipUiStep] = useState<SkipUiStep>('scope')
   const [skipCategoryQuery, setSkipCategoryQuery] = useState('')
   const [skipCategorySuggestionIndex, setSkipCategorySuggestionIndex] = useState(0)
   const [skipCategoryDropdownOpen, setSkipCategoryDropdownOpen] = useState(false)
+  const [skipContextInput, setSkipContextInput] = useState('')
+  const [skipContextSuggestionIndex, setSkipContextSuggestionIndex] = useState(0)
+  const [skipContextPickerOpen, setSkipContextPickerOpen] = useState(false)
+  const [skipPendingContextId, setSkipPendingContextId] = useState<string | null>(null)
   const [taskAdjustment, setTaskAdjustment] = useState<TaskAdjustmentState | null>(null)
+  const [taskAdjustmentUiStepIndex, setTaskAdjustmentUiStepIndex] = useState(0)
   const [adjustCategoryInput, setAdjustCategoryInput] = useState('')
   const [adjustCategoryPickerOpen, setAdjustCategoryPickerOpen] = useState(false)
   const [adjustCategorySuggestionIndex, setAdjustCategorySuggestionIndex] = useState(0)
   const [adjustContextInput, setAdjustContextInput] = useState('')
+  const [adjustPendingContextId, setAdjustPendingContextId] = useState<string | null>(null)
+  const [adjustContextQualifier, setAdjustContextQualifier] = useState('during')
   const [adjustContextPickerOpen, setAdjustContextPickerOpen] = useState(false)
   const [adjustContextSuggestionIndex, setAdjustContextSuggestionIndex] = useState(0)
   const [analyticsPlotRange, setAnalyticsPlotRange] = useState<'month' | 'all'>('month')
@@ -1017,9 +1421,23 @@ function App() {
         .filter((label) => !selectedCategoryTags.includes(label))
         .filter((label) => label.includes(normalizedTagQuery))
         .slice(0, 8)
+  const topComposerCategories = existingCategoryTags.slice(0, 4)
+  const visibleComposerCategoryOptions = normalizedTagQuery.length === 0
+    ? [...topComposerCategories, ...existingCategoryTags.filter((label) => !topComposerCategories.includes(label))]
+    : existingCategoryTags.filter((label) => label.includes(normalizedTagQuery))
+  const composerPendingContext = composerPendingContextId
+    ? sharedConcepts.find((concept) => concept.id === composerPendingContextId) ?? null
+    : null
+  const composerPendingContextQualifiers = composerPendingContext ? conceptSpecifiers(composerPendingContext) : []
+  const composerContextSuggestions = sharedConcepts
+    .filter((concept) => !composerContextInput || concept.label.toLowerCase().includes(composerContextInput.toLowerCase()))
+  const topComposerContexts = sharedConcepts.slice(0, 4)
+  const visibleComposerContexts = composerContextInput.trim().length === 0
+    ? [...topComposerContexts, ...sharedConcepts.filter((concept) => !topComposerContexts.some((topConcept) => topConcept.id === concept.id))]
+    : sharedConcepts.filter((concept) => concept.label.toLowerCase().includes(composerContextInput.toLowerCase()))
   const skipCategoryOptions = useMemo(() => {
     if (!skipFlow) {
-      return state.categories.map((category) => ({ id: category.id, label: category.label }))
+      return [] as Array<{ id: string; label: string }>
     }
 
     const profile = state.userTaskProfiles.find((entry) => entry.id === skipFlow.userTaskProfileId)
@@ -1062,7 +1480,44 @@ function App() {
     : skipCategoryOptions
       .filter((option) => !skipFlow?.categoryIds.includes(option.id))
       .filter((option) => normalizeTagLabel(option.label).includes(normalizedSkipCategoryQuery))
+      .sort((left, right) => {
+        const leftLabel = normalizeTagLabel(left.label)
+        const rightLabel = normalizeTagLabel(right.label)
+        const leftIndex = leftLabel.indexOf(normalizedSkipCategoryQuery)
+        const rightIndex = rightLabel.indexOf(normalizedSkipCategoryQuery)
+        if (leftIndex !== rightIndex) return leftIndex - rightIndex
+        if (leftLabel.length !== rightLabel.length) return leftLabel.length - rightLabel.length
+        return left.label.localeCompare(right.label)
+      })
       .slice(0, 8)
+  const visibleSkipCategoryOptions = normalizedSkipCategoryQuery.length === 0
+    ? skipCategoryOptions
+    : skipCategoryOptions
+      .filter((option) => normalizeTagLabel(option.label).includes(normalizedSkipCategoryQuery))
+      .sort((left, right) => {
+        const leftLabel = normalizeTagLabel(left.label)
+        const rightLabel = normalizeTagLabel(right.label)
+        const leftIndex = leftLabel.indexOf(normalizedSkipCategoryQuery)
+        const rightIndex = rightLabel.indexOf(normalizedSkipCategoryQuery)
+        if (leftIndex !== rightIndex) return leftIndex - rightIndex
+        if (leftLabel.length !== rightLabel.length) return leftLabel.length - rightLabel.length
+        return left.label.localeCompare(right.label)
+      })
+  const skipPendingContext = skipPendingContextId
+    ? sharedConcepts.find((concept) => concept.id === skipPendingContextId) ?? null
+    : null
+  const skipPendingContextQualifiers = skipPendingContext ? conceptSpecifiers(skipPendingContext) : []
+  const skipContextSuggestions = sharedConcepts.filter((concept) => !skipContextInput || concept.label.toLowerCase().includes(skipContextInput.toLowerCase()))
+  const topSkipContexts = sharedConcepts.slice(0, 4)
+  const visibleSkipContexts = skipContextInput.trim().length === 0
+    ? [...topSkipContexts, ...sharedConcepts.filter((concept) => !topSkipContexts.some((topConcept) => topConcept.id === concept.id))]
+    : sharedConcepts.filter((concept) => concept.label.toLowerCase().includes(skipContextInput.toLowerCase()))
+  const skipSelectedCategoryLabels = skipFlow
+    ? skipFlow.categoryIds.map((id) => state.categories.find((category) => category.id === id)?.label).filter(Boolean) as string[]
+    : []
+  const skipProgressSentence = skipFlow
+    ? skipSentencePreview(skipFlow, skipSelectedCategoryLabels.join(', ') || null, sharedConcepts, skipRevealedSections)
+    : ''
 
   const skipScopeIndex = skipFlow ? Math.max(0, SKIP_SCOPE_OPTIONS.findIndex((option) => option.id === skipFlow.scope)) : 0
   const skipDiscomfortIndex = skipFlow ? Math.max(0, DISCOMFORT_OPTIONS.findIndex((option) => option === skipFlow.discomfort)) : 0
@@ -1071,7 +1526,6 @@ function App() {
   const skipConceptIndex = skipFlow ? Math.max(0, skipConceptOptions.findIndex((option) => option.id === skipFlow.conceptId)) : 0
 
   // Adjust modal computed values
-  const adjustTask = taskAdjustment ? state.tasks.find((entry) => entry.id === taskAdjustment.taskId) : undefined
   const adjustSelectedCategoryLabels = taskAdjustment
     ? taskAdjustment.selectedCategoryIds.map((id) => state.categories.find((category) => category.id === id)?.label).filter(Boolean) as string[]
     : []
@@ -1083,24 +1537,133 @@ function App() {
       .filter((label) => !adjustSelectedCategoryLabels.includes(label))
       .filter((label) => normalizeTagLabel(label).includes(normalizedAdjustCategoryQuery))
       .slice(0, 8)
+  const topAdjustCategories = adjustCategoryAllOptions.slice(0, 4)
+  const visibleAdjustCategoryOptions = normalizedAdjustCategoryQuery.length === 0
+    ? [...topAdjustCategories, ...adjustCategoryAllOptions.filter((label) => !topAdjustCategories.includes(label))]
+    : adjustCategoryAllOptions.filter((label) => normalizeTagLabel(label).includes(normalizedAdjustCategoryQuery))
+  const adjustPendingContext = adjustPendingContextId
+    ? sharedConcepts.find((concept) => concept.id === adjustPendingContextId) ?? null
+    : null
+  const adjustPendingContextQualifiers = adjustPendingContext ? conceptSpecifiers(adjustPendingContext) : []
+  const adjustContextSuggestions = sharedConcepts.filter((concept) => !adjustContextInput || concept.label.toLowerCase().includes(adjustContextInput.toLowerCase()))
+  const topAdjustContexts = sharedConcepts.slice(0, 4)
+  const visibleAdjustContexts = adjustContextInput.trim().length === 0
+    ? [...topAdjustContexts, ...sharedConcepts.filter((concept) => !topAdjustContexts.some((topConcept) => topConcept.id === concept.id))]
+    : sharedConcepts.filter((concept) => concept.label.toLowerCase().includes(adjustContextInput.toLowerCase()))
+  const taskComposerFlow = taskComposerFlowSteps(taskDraft, taskComposerOptionalPath)
+  const taskComposerCurrentStepIndex = Math.min(taskComposerUiStepIndex, Math.max(0, taskComposerFlow.length - 1))
+  const taskComposerCurrentStep = taskComposerFlow[taskComposerCurrentStepIndex] ?? 'name'
+  const taskComposerRequiredFlow = taskComposerFlowSteps(taskDraft, null)
+  const taskComposerRequiredLastStepIndex = Math.max(0, taskComposerRequiredFlow.length - 1)
+  const taskComposerIsOptionalPath = taskComposerOptionalPath !== null
+  const taskComposerHasDetails = Object.keys(subjectiveSelections).length > 0
+  const taskComposerCanSave = taskDraft.actionText.trim().length > 0 && taskComposerCurrentStepIndex >= taskComposerRequiredLastStepIndex
+  const taskComposerProgressSentence = renderTaskComposerProgressSentence(
+    taskDraft,
+    timeframeOptions,
+    taskComposerFlow,
+    taskComposerCurrentStepIndex,
+    effectiveSubjectiveSelections,
+    taskComposerHasDetails,
+    selectedCategoryTags,
+    composerPreferredContexts,
+    sharedConcepts,
+    goToComposerStep,
+    openTaskComposerOptionalPath,
+  )
+  const taskAdjustmentFlow = taskAdjustment ? taskAdjustmentFlowSteps(taskAdjustment) : []
+  const taskAdjustmentCurrentStepIndex = taskAdjustment
+    ? Math.min(taskAdjustmentUiStepIndex, Math.max(0, taskAdjustmentFlow.length - 1))
+    : 0
+  const taskAdjustmentCurrentStep = taskAdjustment ? taskAdjustmentFlow[taskAdjustmentCurrentStepIndex] ?? 'title' : 'title'
+  const taskAdjustmentProgressSentence = taskAdjustment
+    ? renderTaskAdjustmentProgressSentence(taskAdjustment, timeframeOptions, taskAdjustmentFlow, taskAdjustmentCurrentStepIndex, adjustSelectedCategoryLabels, sharedConcepts, goToAdjustmentStepById)
+    : ''
 
-  const adjustImportanceIndex = taskAdjustment
-    ? Math.max(0, SUBJECTIVE_OPTIONS_BY_CATEGORY.importance.findIndex((option) => option.id === taskAdjustment.importance))
-    : 0
-  const adjustGrandnessIndex = taskAdjustment
-    ? Math.max(0, SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty.findIndex((option) => option.id === taskAdjustment.grandness))
-    : 0
-  const adjustTimeIndex = taskAdjustment
-    ? Math.max(0, SUBJECTIVE_OPTIONS_BY_CATEGORY.time.findIndex((option) => option.id === taskAdjustment.subjectiveTime))
-    : 0
-  const adjustFocusIndex = taskAdjustment
-    ? Math.max(0, SUBJECTIVE_OPTIONS_BY_CATEGORY.focus.findIndex((option) => option.id === taskAdjustment.focus))
-    : 0
+  function goToComposerStep(stepIndex: number): void {
+    if (taskComposerOptionalPath && stepIndex <= taskComposerRequiredLastStepIndex) {
+      setTaskComposerOptionalPath(null)
+      setTaskComposerUiStepIndex(Math.max(0, Math.min(stepIndex, taskComposerRequiredFlow.length - 1)))
+      return
+    }
+    setTaskComposerUiStepIndex(Math.max(0, Math.min(stepIndex, taskComposerFlow.length - 1)))
+  }
+
+  function openTaskComposerOptionalPath(path: Exclude<TaskComposerOptionalPath, null>): void {
+    const nextFlow = taskComposerFlowSteps(taskDraft, path)
+    const startStep = path === 'details' ? 'importance' : path === 'categories' ? 'category' : 'context'
+    const nextIndex = Math.max(0, nextFlow.indexOf(startStep))
+    setTaskComposerOptionalPath(path)
+    setTaskComposerUiStepIndex(nextIndex)
+  }
+
+  function returnToTaskComposerMainPage(): void {
+    const baseFlow = taskComposerFlowSteps(taskDraft, null)
+    const detailsIndex = Math.max(0, baseFlow.indexOf('details'))
+    setTaskComposerOptionalPath(null)
+    setTaskComposerUiStepIndex(detailsIndex)
+  }
+
+  function advanceComposer(nextDraft: TaskSentenceDraft = taskDraft, fromStep: TaskComposerUiStepId = taskComposerCurrentStep): void {
+    const nextFlow = taskComposerFlowSteps(nextDraft, taskComposerOptionalPath)
+    const currentIndex = Math.max(0, nextFlow.indexOf(fromStep))
+    setTaskComposerUiStepIndex(Math.min(currentIndex + 1, nextFlow.length - 1))
+  }
+
+  function goToAdjustmentStep(stepIndex: number): void {
+    setTaskAdjustmentUiStepIndex(Math.max(0, Math.min(stepIndex, taskAdjustmentFlow.length - 1)))
+  }
+
+  function goToAdjustmentStepById(step: Exclude<TaskAdjustmentUiStepId, 'summary'>): void {
+    if (!taskAdjustment) return
+    const routed = taskAdjustmentRouteStep(step, taskAdjustment)
+    const index = taskAdjustmentFlow.indexOf(routed)
+    if (index >= 0) setTaskAdjustmentUiStepIndex(index)
+  }
+
+  function openAdjustmentBranch(step: Exclude<TaskAdjustmentUiStepId, 'summary'>): void {
+    goToAdjustmentStepById(step)
+  }
+
+  function returnToAdjustmentMainPage(): void {
+    setTaskAdjustmentUiStepIndex(0)
+  }
+
+  function closeTaskAdjustment(): void {
+    setTaskAdjustment(null)
+    setTaskAdjustmentUiStepIndex(0)
+    setAdjustCategoryInput('')
+    setAdjustCategoryPickerOpen(false)
+    setAdjustContextInput('')
+    setAdjustPendingContextId(null)
+    setAdjustContextQualifier('during')
+    setAdjustContextPickerOpen(false)
+  }
+
+  function advanceAdjustmentBranch(nextAdjustment: TaskAdjustmentState, fromStep: TaskAdjustmentUiStepId, branchSteps: TaskAdjustmentUiStepId[]): void {
+    const nextFlow = taskAdjustmentFlowSteps(nextAdjustment)
+    const currentBranch = nextFlow.filter((step) => branchSteps.includes(step))
+    const currentIndex = currentBranch.indexOf(fromStep)
+    const nextStep = currentBranch[currentIndex + 1]
+    if (!nextStep) {
+      returnToAdjustmentMainPage()
+      return
+    }
+    const targetIndex = nextFlow.indexOf(nextStep)
+    if (targetIndex >= 0) {
+      setTaskAdjustmentUiStepIndex(targetIndex)
+      return
+    }
+    returnToAdjustmentMainPage()
+  }
 
   function addAdjustCategoryTag(label: string): void {
     const clean = normalizeTagLabel(label)
     if (!clean || !taskAdjustment || !selectedUser) return
     const existing = state.categories.find((category) => normalizeTagLabel(category.label) === clean)
+    const willAdd = existing
+      ? !taskAdjustment.selectedCategoryIds.includes(existing.id)
+      : true
     if (existing) {
       if (!taskAdjustment.selectedCategoryIds.includes(existing.id)) {
         setTaskAdjustment((previous) => previous ? { ...previous, selectedCategoryIds: [...previous.selectedCategoryIds, existing.id] } : previous)
@@ -1120,12 +1683,36 @@ function App() {
     setAdjustCategoryInput('')
     setAdjustCategoryPickerOpen(false)
     setAdjustCategorySuggestionIndex(0)
+    if (willAdd) returnToAdjustmentMainPage()
   }
 
   function removeAdjustCategoryTag(label: string): void {
     const category = state.categories.find((entry) => entry.label === label)
     if (!category) return
     setTaskAdjustment((previous) => previous ? { ...previous, selectedCategoryIds: previous.selectedCategoryIds.filter((id) => id !== category.id) } : previous)
+  }
+
+  function addAdjustContext(conceptId: string, qualifier: string = adjustContextQualifier): void {
+    if (!taskAdjustment) return
+    const willAdd = !taskAdjustment.preferredContexts.some((context) => context.conceptId === conceptId && context.qualifier === qualifier)
+    setTaskAdjustment((previous) => previous ? {
+      ...previous,
+      preferredContexts: previous.preferredContexts.some((context) => context.conceptId === conceptId && context.qualifier === qualifier)
+        ? previous.preferredContexts
+        : [...previous.preferredContexts, { conceptId, qualifier }],
+    } : previous)
+    setAdjustContextInput('')
+    setAdjustPendingContextId(null)
+    setAdjustContextPickerOpen(false)
+    setAdjustContextSuggestionIndex(0)
+    if (willAdd) returnToAdjustmentMainPage()
+  }
+
+  function removeAdjustContext(conceptId: string, qualifier: string): void {
+    setTaskAdjustment((previous) => previous ? {
+      ...previous,
+      preferredContexts: previous.preferredContexts.filter((context) => !(context.conceptId === conceptId && context.qualifier === qualifier)),
+    } : previous)
   }
 
   function handleAdjustCategoryKeyDown(event: React.KeyboardEvent<HTMLInputElement>): void {
@@ -1142,6 +1729,47 @@ function App() {
     } else if (event.key === 'Escape') {
       setAdjustCategoryPickerOpen(false)
     }
+  }
+
+  function handleAdjustContextKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setAdjustContextSuggestionIndex((current) => rotateIndex(current, Math.max(1, adjustContextSuggestions.length), 1))
+      return
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setAdjustContextSuggestionIndex((current) => rotateIndex(current, Math.max(1, adjustContextSuggestions.length), -1))
+      return
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const chosen = adjustContextSuggestions[adjustContextSuggestionIndex]
+      if (chosen) {
+        setAdjustPendingContextId(chosen.id)
+        setAdjustContextQualifier(conceptSpecifiers(chosen)[0] ?? 'during')
+      }
+      return
+    }
+
+    if (event.key === 'Escape') {
+      setAdjustContextPickerOpen(false)
+    }
+  }
+
+  function goBackFromAdjustment(): void {
+    if (!taskAdjustment) return
+    if (taskAdjustmentCurrentStep === 'summary') {
+      closeTaskAdjustment()
+      return
+    }
+    if (taskAdjustmentCurrentStep === 'title' || taskAdjustmentCurrentStep === 'importance' || taskAdjustmentCurrentStep === 'category' || taskAdjustmentCurrentStep === 'context' || taskAdjustmentCurrentStep === 'notes') {
+      returnToAdjustmentMainPage()
+      return
+    }
+    goToAdjustmentStep(taskAdjustmentCurrentStepIndex - 1)
   }
 
   function dismissToast(): void {
@@ -1245,6 +1873,14 @@ function App() {
     if (categorySuggestionIndex < categorySuggestions.length) return
     setCategorySuggestionIndex(0)
   }, [categorySuggestionIndex, categorySuggestions.length])
+
+  useEffect(() => {
+    setTaskComposerUiStepIndex((current) => Math.min(current, Math.max(0, taskComposerFlow.length - 1)))
+  }, [taskComposerFlow.length])
+
+  useEffect(() => {
+    setTaskAdjustmentUiStepIndex((current) => Math.min(current, Math.max(0, taskAdjustmentFlow.length - 1)))
+  }, [taskAdjustmentFlow.length])
 
   useEffect(() => {
     if (!showSubjectiveComposer) return
@@ -1503,8 +2139,13 @@ function App() {
       onAction: () => {
         dismissToast()
         setSkipSentenceCaret('scope')
+        setSkipUiStep('scope')
         setSkipCategoryQuery('')
         setSkipCategorySuggestionIndex(0)
+        setSkipContextInput('')
+        setSkipContextSuggestionIndex(0)
+        setSkipContextPickerOpen(false)
+        setSkipPendingContextId(null)
         setSkipFlow(defaultSkipFlow(userTaskProfileId, logId))
       },
       duration: 4200,
@@ -1523,6 +2164,8 @@ function App() {
   }
 
   function openTaskComposer(): void {
+    clearTaskComposer()
+    setTaskComposerUiStepIndex(0)
     setTaskComposerOpen(true)
   }
 
@@ -1548,7 +2191,15 @@ function App() {
     setSelectedCategoryTags([])
     setCategorySuggestionIndex(0)
     setTagPickerOpen(false)
+    setComposerContextInput('')
+    setComposerPendingContextId(null)
+    setComposerContextQualifier('during')
+    setComposerContextPickerOpen(false)
+    setComposerContextSuggestionIndex(0)
+    setComposerPreferredContexts([])
     setSentenceCaret('name')
+    setTaskComposerUiStepIndex(0)
+    setTaskComposerOptionalPath(null)
   }
 
   function moveSentenceCaret(delta: number): void {
@@ -1717,6 +2368,28 @@ function App() {
     })
   }
 
+  function selectSkipScope(scope: SkipScope): void {
+    setSkipFlow((previous) => {
+      if (!previous) return previous
+      return {
+        ...previous,
+        scope,
+        categoryIds: scope === 'sort-of-task' ? previous.categoryIds : [],
+        categoryCursorId: scope === 'sort-of-task' ? previous.categoryCursorId : '',
+        conceptId: scope === 'today-only' ? '' : previous.conceptId,
+      }
+    })
+    setSkipUiStep('questions')
+    if (scope === 'today-only') {
+      setSkipPendingContextId(null)
+      setSkipContextInput('')
+      setSkipContextPickerOpen(false)
+      setSkipRevealedSections(new Set())
+      return
+    }
+    setSkipRevealedSections(new Set())
+  }
+
   function rotateSkipDiscomfort(delta: number): void {
     setSkipFlow((previous) => {
       if (!previous) return previous
@@ -1784,7 +2457,8 @@ function App() {
     const query = rawLabel.trim()
     if (!query) return
 
-    const matchedCategory = skipCategoryOptions.find((option) => normalizeTagLabel(option.label) === normalizeTagLabel(query))
+    const normalizedQuery = normalizeTagLabel(query)
+    const matchedCategory = state.categories.find((category) => normalizeTagLabel(category.label) === normalizedQuery)
 
     if (matchedCategory) {
       setSkipFlow((previous) => {
@@ -1798,33 +2472,111 @@ function App() {
         }
       })
     } else {
-      // Create the category immediately and add it
       const newId = crypto.randomUUID()
       const newCategory: CategoryDefinition = {
         id: newId,
         createdBy: selectedUser?.id ?? 'user-me',
         createdAt: new Date().toISOString(),
         label: query,
-        definition: `Created from skip reflection.`,
+        definition: 'Created from skip reflection.',
         status: 'active',
       }
       updateState((previous) => ({
         ...previous,
         categories: [...previous.categories, newCategory],
       }))
-      setSkipFlow((previous) => {
-        if (!previous) return previous
-        return {
-          ...previous,
-          categoryIds: [...previous.categoryIds, newId],
-          categoryCursorId: newId,
-          newCategoryLabel: '',
-        }
-      })
+      setSkipFlow((previous) => previous ? {
+        ...previous,
+        categoryIds: previous.categoryIds.includes(newId) ? previous.categoryIds : [...previous.categoryIds, newId],
+        categoryCursorId: newId,
+        newCategoryLabel: query,
+      } : previous)
     }
 
     setSkipCategoryQuery('')
     setSkipCategorySuggestionIndex(0)
+    setSkipCategoryDropdownOpen(false)
+    setSkipRevealedSections((previous) => new Set(previous).add('categories'))
+    setSkipUiStep('questions')
+  }
+
+  function addSkipContext(conceptId: string, qualifier: string): void {
+    setSkipFlow((previous) => previous ? {
+      ...previous,
+      conceptId,
+      contextSpecifier: qualifier,
+    } : previous)
+    setSkipPendingContextId(null)
+    setSkipContextInput('')
+    setSkipContextSuggestionIndex(0)
+    setSkipContextPickerOpen(false)
+    setSkipRevealedSections((previous) => new Set(previous).add('when'))
+    setSkipUiStep('questions')
+  }
+
+  function openSkipQuestion(step: Exclude<SkipUiStep, 'scope' | 'questions'>): void {
+    setSkipUiStep(step)
+    if (step === 'categories') {
+      setSkipCategoryDropdownOpen(true)
+      return
+    }
+    if (step === 'when') {
+      setSkipContextPickerOpen(true)
+    }
+  }
+
+  function chooseSkipWhy(option: string): void {
+    setSkipFlow((previous) => previous ? { ...previous, discomfort: option } : previous)
+    setSkipRevealedSections((previous) => new Set(previous).add('why'))
+    setSkipUiStep('questions')
+  }
+
+  function goBackFromSkip(): void {
+    if (skipUiStep === 'scope' || skipUiStep === 'questions') {
+      closeSkipFlowWithoutReflection()
+      return
+    }
+    setSkipUiStep('questions')
+  }
+
+  function removeSkipContext(): void {
+    setSkipFlow((previous) => previous ? {
+      ...previous,
+      conceptId: '',
+      contextSpecifier: 'during',
+    } : previous)
+    setSkipPendingContextId(null)
+  }
+
+  function handleSkipContextKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setSkipContextSuggestionIndex((current) => rotateIndex(current, Math.max(1, skipContextSuggestions.length), 1))
+      return
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setSkipContextSuggestionIndex((current) => rotateIndex(current, Math.max(1, skipContextSuggestions.length), -1))
+      return
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const chosen = skipContextSuggestions[skipContextSuggestionIndex]
+      if (chosen) {
+        setSkipPendingContextId(chosen.id)
+        setSkipFlow((previous) => previous ? {
+          ...previous,
+          contextSpecifier: conceptSpecifiers(chosen)[0] ?? 'during',
+        } : previous)
+      }
+      return
+    }
+
+    if (event.key === 'Escape') {
+      setSkipContextPickerOpen(false)
+    }
   }
 
   function handleSkipCategoryQueryKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
@@ -1867,9 +2619,14 @@ function App() {
     }
     setSkipFlow(null)
     setSkipRevealedSections(new Set())
+    setSkipUiStep('scope')
     setSkipCategoryQuery('')
     setSkipCategorySuggestionIndex(0)
     setSkipCategoryDropdownOpen(false)
+    setSkipContextInput('')
+    setSkipContextSuggestionIndex(0)
+    setSkipContextPickerOpen(false)
+    setSkipPendingContextId(null)
   }
 
   function removeSkipCategory(categoryId: string): void {
@@ -1921,6 +2678,7 @@ function App() {
   function addCategoryTag(rawValue: string): void {
     const cleanLabel = normalizeTagLabel(rawValue)
     if (!cleanLabel) return
+    const willAdd = !selectedCategoryTags.includes(cleanLabel)
 
     setSelectedCategoryTags((previous) => {
       if (previous.includes(cleanLabel)) return previous
@@ -1928,6 +2686,9 @@ function App() {
     })
     setCategoryTagInput('')
     setCategorySuggestionIndex(0)
+    if (willAdd && taskComposerOptionalPath === 'categories') {
+      returnToTaskComposerMainPage()
+    }
   }
 
   function removeCategoryTag(label: string): void {
@@ -1938,6 +2699,53 @@ function App() {
     if (!categoryTagInput.trim()) return
     const exactMatch = existingCategoryTags.find((label) => label === normalizedTagQuery)
     addCategoryTag(exactMatch ?? categoryTagInput)
+  }
+
+  function addComposerContext(conceptId: string, qualifier: string = composerContextQualifier): void {
+    const willAdd = !composerPreferredContexts.some((context) => context.conceptId === conceptId && context.qualifier === qualifier)
+    setComposerPreferredContexts((previous) => {
+      if (previous.some((context) => context.conceptId === conceptId && context.qualifier === qualifier)) return previous
+      return [...previous, { conceptId, qualifier }]
+    })
+    setComposerContextInput('')
+    setComposerPendingContextId(null)
+    setComposerContextPickerOpen(false)
+    setComposerContextSuggestionIndex(0)
+    if (willAdd && taskComposerOptionalPath === 'context') {
+      returnToTaskComposerMainPage()
+    }
+  }
+
+  function removeComposerContext(conceptId: string, qualifier: string): void {
+    setComposerPreferredContexts((previous) => previous.filter((context) => !(context.conceptId === conceptId && context.qualifier === qualifier)))
+  }
+
+  function handleComposerContextKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setComposerContextSuggestionIndex((current) => rotateIndex(current, Math.max(1, composerContextSuggestions.length), 1))
+      return
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setComposerContextSuggestionIndex((current) => rotateIndex(current, Math.max(1, composerContextSuggestions.length), -1))
+      return
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const chosen = composerContextSuggestions[composerContextSuggestionIndex]
+      if (chosen) {
+        setComposerPendingContextId(chosen.id)
+        setComposerContextQualifier(conceptSpecifiers(chosen)[0] ?? 'during')
+      }
+      return
+    }
+
+    if (event.key === 'Escape') {
+      setComposerContextPickerOpen(false)
+    }
   }
 
   function handleCategoryTagInputKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
@@ -2091,7 +2899,10 @@ function App() {
     const effectiveDifficulty = effectiveSubjectiveSelections.difficulty.value ?? DEFAULT_SUBJECTIVE_VALUES.difficulty
     const effectiveTime = effectiveSubjectiveSelections.time.value ?? DEFAULT_SUBJECTIVE_VALUES.time
     const effectiveFocus = effectiveSubjectiveSelections.focus.value ?? DEFAULT_SUBJECTIVE_VALUES.focus
-    const categoryLabels = selectedCategoryTags
+    const categoryLabels = [...new Set([
+      ...selectedCategoryTags,
+      ...(categoryTagInput.trim() ? [normalizeTagLabel(categoryTagInput)] : []),
+    ])]
 
     updateState((previous) => {
       const existingByTag = new Map<string, CategoryDefinition>(
@@ -2137,7 +2948,11 @@ function App() {
               subjectiveTime: effectiveTime,
               focus: effectiveFocus,
             },
-            sharedConceptIds: [],
+            sharedConceptIds: composerPreferredContexts.map((context) => context.conceptId),
+            sharedContextLinks: composerPreferredContexts.map((context) => ({
+              conceptId: context.conceptId,
+              qualifier: context.qualifier,
+            })),
             defaultTimePreference: taskDraft.timeSensitive
               ? {
                   dayGroup: taskDraft.dayGroup,
@@ -2189,6 +3004,10 @@ function App() {
   function openTaskAdjustment(userTaskProfileId: string): void {
     const next = taskAdjustmentFromState(state, userTaskProfileId)
     if (!next) return
+    setTaskAdjustmentUiStepIndex(0)
+    setAdjustContextInput('')
+    setAdjustPendingContextId(null)
+    setAdjustContextQualifier('during')
     setTaskAdjustment(next)
   }
 
@@ -2219,6 +3038,8 @@ function App() {
             ...task,
             title: taskAdjustment.title.trim() || task.title,
             sharedConceptIds: taskAdjustment.preferredContexts.map((c) => c.conceptId),
+            sharedContextLinks: taskAdjustment.preferredContexts
+              .map((context) => ({ conceptId: context.conceptId, qualifier: context.qualifier })),
             desiredFrequency: {
               ...task.desiredFrequency,
               kind: 'interval' as const,
@@ -2253,10 +3074,29 @@ function App() {
       ],
     }))
 
-    setTaskAdjustment(null)
-    setAdjustCategoryInput('')
-    setAdjustCategoryPickerOpen(false)
+    closeTaskAdjustment()
     showToast('Task adjustment saved.')
+  }
+
+  function deleteTaskAdjustment(): void {
+    if (!taskAdjustment) return
+    const confirmed = window.confirm('Delete this task? This removes it for everyone in the garden.')
+    if (!confirmed) return
+
+    const taskId = taskAdjustment.taskId
+    const profileIds = state.userTaskProfiles.filter((entry) => entry.taskId === taskId).map((entry) => entry.id)
+
+    updateState((previous) => ({
+      ...previous,
+      tasks: previous.tasks.filter((task) => task.id !== taskId),
+      userTaskProfiles: previous.userTaskProfiles.filter((entry) => entry.taskId !== taskId),
+      sharedTaskCategories: previous.sharedTaskCategories.filter((entry) => entry.taskId !== taskId),
+      userTaskCategories: previous.userTaskCategories.filter((entry) => entry.taskId !== taskId),
+      logs: previous.logs.filter((entry) => entry.taskId !== taskId && !profileIds.includes(entry.userTaskProfileId)),
+    }))
+
+    closeTaskAdjustment()
+    showToast('Task deleted.')
   }
 
   function saveConcept(): void {
@@ -2427,34 +3267,15 @@ function App() {
       .map((id) => state.categories.find((category) => category.id === id)?.label)
       .filter(Boolean) as string[]
     const categoryLabel = selectedCategoryLabels.join(', ') || skipFlow.newCategoryLabel.trim() || ''
-    const note = skipSentencePreview(skipFlow, categoryLabel || null, sharedConcepts)
+    const note = skipSentencePreview(skipFlow, categoryLabel || null, sharedConcepts, skipRevealedSections)
     const profile = state.userTaskProfiles.find((entry) => entry.id === skipFlow.userTaskProfileId)
     if (!profile) {
       setSkipFlow(null)
       return
     }
 
-    const normalizedNewCategory = skipFlow.newCategoryLabel.trim()
-    const existingCategory = normalizedNewCategory
-      ? state.categories.find((category) => category.label.toLowerCase() === normalizedNewCategory.toLowerCase())
-      : undefined
-    const createdCategory: CategoryDefinition | null = skipFlow.scope === 'sort-of-task' && normalizedNewCategory && !existingCategory
-      ? {
-          id: crypto.randomUUID(),
-          createdBy: selectedUser.id,
-          createdAt: new Date().toISOString(),
-          label: normalizedNewCategory,
-          definition: `Created from skip reflection for ${sentenceTitle(categoryLabel)}.`,
-          status: 'active',
-        }
-      : null
-
     const selectedCategoryIds = skipFlow.scope === 'sort-of-task'
-      ? [...new Set([
-          ...skipFlow.categoryIds,
-          ...(existingCategory ? [existingCategory.id] : []),
-          ...(createdCategory ? [createdCategory.id] : []),
-        ])]
+      ? [...new Set(skipFlow.categoryIds)]
       : []
 
     const condition = comfortExpression(skipFlow)
@@ -2484,7 +3305,6 @@ function App() {
               : task
           ))
         : previous.tasks,
-      categories: createdCategory ? [...previous.categories, createdCategory] : previous.categories,
       userTaskCategories: [
         ...previous.userTaskCategories,
         ...selectedCategoryIds
@@ -2494,7 +3314,7 @@ function App() {
             taskId: profile.taskId,
             userId: selectedUser.id,
             categoryId,
-            source: createdCategory && createdCategory.id === categoryId ? 'personal' as const : 'adopted-from-other-user' as const,
+            source: 'adopted-from-other-user' as const,
             createdAt: new Date().toISOString(),
           })),
       ],
@@ -2503,8 +3323,13 @@ function App() {
 
     setSkipFlow(null)
     setSkipRevealedSections(new Set())
+    setSkipUiStep('scope')
     setSkipCategoryQuery('')
     setSkipCategorySuggestionIndex(0)
+    setSkipContextInput('')
+    setSkipContextSuggestionIndex(0)
+    setSkipContextPickerOpen(false)
+    setSkipPendingContextId(null)
     showToast('Skip reflection saved.')
   }
 
@@ -2738,192 +3563,213 @@ function App() {
             closeSkipFlowWithoutReflection()
           }
         }}>
-          <div className="sheet">
-            <p className="minimal-sentence-row subjective-sentence-row">
-              <span className="minimal-sentence-prefix">I don't want to do</span>
-              <SentenceSpinner
-                spinnerRef={skipScopeSpinnerRef}
-                className={SENTENCE_INLINE_SPINNER_CLASS}
-                active={skipSentenceCaret === 'scope'}
-                ariaLabel="Skip reason scope"
-                selectedIndex={skipScopeIndex}
-                options={SKIP_SCOPE_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                onRotate={rotateSkipScope}
-                onTouchStart={handleSkipTouchStart}
-                onTouchEnd={(event) => handleSkipTouchEnd(event, rotateSkipScope)}
-                onFocus={() => setSkipSentenceCaret('scope')}
-                onKeyDown={(event) => handleSkipSpinnerKeyDown(event, rotateSkipScope)}
-              />
-              .
-            </p>
-
-            {skipFlow.scope !== 'today-only' && (
-              <div className="skip-reveal-buttons">
-                <button
-                  type="button"
-                  className={`reveal-btn${skipRevealedSections.has('why') ? ' revealed' : ''}`}
-                  onClick={() => setSkipRevealedSections((previous) => {
-                    const next = new Set(previous)
-                    next.has('why') ? next.delete('why') : next.add('why')
-                    return next
-                  })}
-                >
-                  why?
-                </button>
-                {skipFlow.scope === 'sort-of-task' && (
-                  <button
-                    type="button"
-                    className={`reveal-btn${skipRevealedSections.has('what') ? ' revealed' : ''}`}
-                    onClick={() => setSkipRevealedSections((previous) => {
-                      const next = new Set(previous)
-                      next.has('what') ? next.delete('what') : next.add('what')
-                      return next
-                    })}
-                  >
-                    what?
-                  </button>
-                )}
-                {skipConceptOptions.length > 0 && (
-                  <button
-                    type="button"
-                    className={`reveal-btn${skipRevealedSections.has('when') ? ' revealed' : ''}`}
-                    onClick={() => setSkipRevealedSections((previous) => {
-                      const next = new Set(previous)
-                      next.has('when') ? next.delete('when') : next.add('when')
-                      return next
-                    })}
-                  >
-                    when?
-                  </button>
-                )}
+          <div className="modal sentence-composer-modal entry-modal-narrow">
+            <div className="entry-shell">
+              <div className="entry-header">
+                <p className="entry-sentence">{skipProgressSentence}</p>
               </div>
-            )}
 
-            {skipFlow.scope !== 'today-only' && skipRevealedSections.has('why') && (
-              <p className="minimal-sentence-row subjective-sentence-row">
-                <span className="minimal-sentence-prefix">because it feels</span>
-                <SentenceSpinner
-                  spinnerRef={skipDiscomfortSpinnerRef}
-                  className={SENTENCE_INLINE_SPINNER_CLASS}
-                  active={skipSentenceCaret === 'discomfort'}
-                  ariaLabel="Discomfort level"
-                  selectedIndex={skipDiscomfortIndex}
-                  options={DISCOMFORT_OPTIONS.map((option) => ({ id: option, label: option }))}
-                  onRotate={rotateSkipDiscomfort}
-                  onTouchStart={handleSkipTouchStart}
-                  onTouchEnd={(event) => handleSkipTouchEnd(event, rotateSkipDiscomfort)}
-                  onFocus={() => setSkipSentenceCaret('discomfort')}
-                  onKeyDown={(event) => handleSkipSpinnerKeyDown(event, rotateSkipDiscomfort)}
-                />
-                .
-              </p>
-            )}
-
-            {skipFlow.scope === 'sort-of-task' && skipRevealedSections.has('what') && (
-              <div className="minimal-sentence-row subjective-sentence-row">
-                <span className="minimal-sentence-prefix">I feel the same with tasks like</span>
-                {skipFlow.categoryIds.map((categoryId) => {
-                  const label = state.categories.find((category) => category.id === categoryId)?.label
-                  if (!label) return null
-                  return (
-                    <span key={categoryId} className="tag-chip-inline">
-                      {label}
-                      <button type="button" className="tag-remove-btn" onClick={() => removeSkipCategory(categoryId)} aria-label={`Remove ${label}`}>
-                        ×
-                      </button>
-                    </span>
-                  )
-                })}
-                <span className="sentence-dropdown">
-                  <input
-                    className={`sentence-dropdown-input${skipCategoryQuery ? ' has-query' : ''}`}
-                    value={skipCategoryQuery}
-                    onChange={(event) => {
-                      setSkipCategoryQuery(event.target.value)
-                      setSkipCategoryDropdownOpen(true)
-                      setSkipCategorySuggestionIndex(0)
-                    }}
-                    onKeyDown={handleSkipCategoryQueryKeyDown}
-                    onFocus={() => {
-                      setSkipSentenceCaret('category')
-                      setSkipCategoryDropdownOpen(true)
-                    }}
-                    onBlur={() => {
-                      setTimeout(() => setSkipCategoryDropdownOpen(false), 150)
-                    }}
-                    placeholder="+ category"
-                  />
-                  {skipCategoryDropdownOpen && skipCategorySuggestions.length > 0 && (
-                    <div className="sentence-dropdown-list" role="listbox" aria-label="Category suggestions">
-                      {skipCategorySuggestions.map((option, index) => (
+              <div className="entry-body entry-body-compact">
+                {skipUiStep === 'scope' && (
+                  <div className="entry-section">
+                    <div className="entry-option-grid compact-option-grid">
+                      {SKIP_SCOPE_OPTIONS.map((option) => (
                         <button
                           key={option.id}
                           type="button"
-                          className={`sentence-dropdown-item${skipCategorySuggestionIndex === index ? ' active-suggestion' : ''}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault()
-                            addSkipCategoryByLabel(option.label)
-                          }}
-                          onMouseEnter={() => setSkipCategorySuggestionIndex(index)}
+                          className={`entry-option-card${skipFlow.scope === option.id ? ' selected' : ''}`}
+                          onClick={() => selectSkipScope(option.id)}
                         >
-                          {option.label}
+                          <strong>{option.label}</strong>
                         </button>
                       ))}
-                      {skipCategoryQuery.trim() && !skipCategorySuggestions.some((option) => normalizeTagLabel(option.label) === normalizeTagLabel(skipCategoryQuery)) && (
-                        <button
-                          type="button"
-                          className="sentence-dropdown-item sentence-dropdown-create"
-                          onMouseDown={(event) => {
-                            event.preventDefault()
-                            addSkipCategoryByLabel(skipCategoryQuery)
-                          }}
-                        >
-                          create &ldquo;{skipCategoryQuery.trim()}&rdquo;
+                    </div>
+                  </div>
+                )}
+
+                {skipUiStep === 'questions' && skipFlow.scope !== 'today-only' && (
+                  <div className="entry-section">
+                    <div className="entry-option-grid compact-option-grid">
+                      <button type="button" className="entry-option-card" onClick={() => openSkipQuestion('why')}>
+                        <strong>why?</strong>
+                      </button>
+                      {skipFlow.scope === 'sort-of-task' && (
+                        <button type="button" className="entry-option-card" onClick={() => openSkipQuestion('categories')}>
+                          <strong>which categories?</strong>
+                        </button>
+                      )}
+                      {sharedConcepts.length > 0 && (
+                        <button type="button" className="entry-option-card" onClick={() => openSkipQuestion('when')}>
+                          <strong>when?</strong>
                         </button>
                       )}
                     </div>
-                  )}
-                </span>
+                  </div>
+                )}
+
+                {skipUiStep === 'why' && skipFlow.scope !== 'today-only' && (
+                  <div className="entry-section">
+                    <div className="entry-option-grid compact-option-grid">
+                      {DISCOMFORT_OPTIONS.map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          className={`entry-option-card${skipFlow.discomfort === option ? ' selected' : ''}`}
+                          onClick={() => chooseSkipWhy(option)}
+                        >
+                          <strong>{option}</strong>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {skipUiStep === 'categories' && skipFlow.scope === 'sort-of-task' && (
+                  <div className="entry-section">
+                    <input
+                      className={`sentence-dropdown-input${skipCategoryQuery ? ' has-query' : ''}`}
+                      value={skipCategoryQuery}
+                      onChange={(event) => {
+                        setSkipCategoryQuery(event.target.value)
+                        setSkipCategorySuggestionIndex(0)
+                        setSkipCategoryDropdownOpen(true)
+                      }}
+                      onKeyDown={handleSkipCategoryQueryKeyDown}
+                      onFocus={() => setSkipCategoryDropdownOpen(true)}
+                      onBlur={() => setTimeout(() => setSkipCategoryDropdownOpen(false), 150)}
+                      placeholder={skipCategoryOptions.length > 0 ? 'Search categories' : 'Add a category'}
+                      autoFocus
+                    />
+                    {(skipCategoryDropdownOpen || !skipCategoryQuery) && skipCategoryOptions.length > 0 && (
+                      <div className="entry-option-scroll">
+                        <div className="entry-option-grid compact-option-grid">
+                          {visibleSkipCategoryOptions.map((option) => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              className={`entry-option-card${skipFlow.categoryIds.includes(option.id) ? ' selected' : ''}`}
+                              onClick={() => addSkipCategoryByLabel(option.label)}
+                            >
+                              <strong>{option.label}</strong>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {skipCategoryQuery.trim().length > 0 && !state.categories.some((category) => normalizeTagLabel(category.label) === normalizeTagLabel(skipCategoryQuery)) && (
+                      <button type="button" className="entry-option-card" onClick={() => addSkipCategoryByLabel(skipCategoryQuery)}>
+                        <strong>Create “{skipCategoryQuery.trim()}”</strong>
+                      </button>
+                    )}
+                    {skipCategoryOptions.length === 0 && !skipCategoryQuery.trim() && (
+                      <p className="subtle-text">This task has no categories yet. Add one.</p>
+                    )}
+                    <div className="entry-inline-row">
+                      {skipSelectedCategoryLabels.map((label) => {
+                        const categoryId = state.categories.find((category) => category.label === label)?.id
+                        if (!categoryId) return null
+                        return (
+                          <span key={categoryId} className="tag-chip-inline">
+                            {label}
+                            <button type="button" className="tag-remove-btn" onClick={() => removeSkipCategory(categoryId)} aria-label={`Remove ${label}`}>
+                              ×
+                            </button>
+                          </span>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {skipUiStep === 'when' && skipFlow.scope !== 'today-only' && sharedConcepts.length > 0 && (
+                  <div className="entry-section">
+                    {!skipPendingContext && (
+                      <>
+                        <input
+                          className={`sentence-dropdown-input${skipContextInput ? ' has-query' : ''}`}
+                          value={skipContextInput}
+                          onChange={(event) => {
+                            setSkipContextInput(event.target.value)
+                            setSkipContextSuggestionIndex(0)
+                            setSkipContextPickerOpen(true)
+                          }}
+                          onKeyDown={handleSkipContextKeyDown}
+                          onFocus={() => setSkipContextPickerOpen(true)}
+                          onBlur={() => setTimeout(() => setSkipContextPickerOpen(false), 150)}
+                          placeholder="Search preferred context"
+                          autoFocus
+                        />
+                        {(skipContextPickerOpen || !skipContextInput) && (
+                          <div className="entry-option-scroll">
+                            <div className="entry-option-grid compact-option-grid">
+                              {visibleSkipContexts.map((concept) => (
+                                <button
+                                  key={concept.id}
+                                  type="button"
+                                  className={`entry-option-card${skipFlow.conceptId === concept.id ? ' selected' : ''}`}
+                                  onClick={() => {
+                                    setSkipPendingContextId(concept.id)
+                                    setSkipFlow((previous) => previous ? {
+                                      ...previous,
+                                      contextSpecifier: conceptSpecifiers(concept)[0] ?? 'during',
+                                    } : previous)
+                                  }}
+                                >
+                                  <strong>{concept.label}</strong>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {skipPendingContext && (
+                      <div className="entry-stack">
+                        <button type="button" className="secondary-btn" onClick={() => setSkipPendingContextId(null)}>
+                          {skipPendingContext.label}
+                        </button>
+                        <div className="entry-option-grid compact-option-grid">
+                          {skipPendingContextQualifiers.map((qualifier) => (
+                            <button
+                              key={`${skipPendingContext.id}-${qualifier}`}
+                              type="button"
+                              className={`entry-option-card${skipFlow.conceptId === skipPendingContext.id && skipFlow.contextSpecifier === qualifier ? ' selected' : ''}`}
+                              onClick={() => addSkipContext(skipPendingContext.id, qualifier)}
+                            >
+                              <strong>{qualifier}</strong>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="entry-inline-row">
+                      {skipFlow.conceptId && (() => {
+                        const concept = sharedConcepts.find((entry) => entry.id === skipFlow.conceptId)
+                        if (!concept) return null
+                        return (
+                          <span className="tag-chip-inline">
+                            {skipFlow.contextSpecifier} {concept.label}
+                            <button type="button" className="tag-remove-btn" onClick={removeSkipContext} aria-label={`Remove ${concept.label}`}>
+                              ×
+                            </button>
+                          </span>
+                        )
+                      })()}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
 
-            {skipFlow.scope !== 'today-only' && skipConceptOptions.length > 0 && skipRevealedSections.has('when') && (
-              <p className="minimal-sentence-row subjective-sentence-row">
-                <span className="minimal-sentence-prefix">it is easier</span>
-                <span className="sentence-spinner-group">
-                  <SentenceSpinner
-                    spinnerRef={skipSpecifierSpinnerRef}
-                    className={`${SENTENCE_INLINE_SPINNER_CLASS} skip-specifier-spinner`}
-                    active={skipSentenceCaret === 'specifier'}
-                    ariaLabel="Context specifier"
-                    selectedIndex={skipSpecifierIndex}
-                    options={skipSpecifierOptions.map((option) => ({ id: option, label: option }))}
-                    onRotate={rotateSkipSpecifier}
-                    onTouchStart={handleSkipTouchStart}
-                    onTouchEnd={(event) => handleSkipTouchEnd(event, rotateSkipSpecifier)}
-                    onFocus={() => setSkipSentenceCaret('specifier')}
-                    onKeyDown={(event) => handleSkipSpinnerKeyDown(event, rotateSkipSpecifier)}
-                  />
-                  <SentenceSpinner
-                    spinnerRef={skipConceptSpinnerRef}
-                    className={SENTENCE_INLINE_SPINNER_CLASS}
-                    active={skipSentenceCaret === 'concept'}
-                    ariaLabel="Context concept"
-                    selectedIndex={skipConceptIndex}
-                    options={skipConceptOptions.map((option) => ({ id: option.id, label: option.label }))}
-                    onRotate={rotateSkipConcept}
-                    onTouchStart={handleSkipTouchStart}
-                    onTouchEnd={(event) => handleSkipTouchEnd(event, rotateSkipConcept)}
-                    onFocus={() => setSkipSentenceCaret('concept')}
-                    onKeyDown={(event) => handleSkipSpinnerKeyDown(event, rotateSkipConcept)}
-                  />
-                </span>
-                .
-              </p>
-            )}
-
-            <div className="modal-actions">
-              <button className="primary-btn" onClick={saveSkipReflection}>Save reflection</button>
+              <div className="entry-footer">
+                <button className="secondary-btn" onClick={goBackFromSkip}>
+                  {skipUiStep === 'scope' || skipUiStep === 'questions' ? 'Cancel' : 'Back'}
+                </button>
+                <div className="entry-footer-actions">
+                  {skipUiStep === 'questions' && (
+                    <button className="primary-btn" onClick={saveSkipReflection}>Done</button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2931,297 +3777,433 @@ function App() {
 
       {taskAdjustment && (
         <div className="overlay" role="dialog" aria-modal="true" style={{ zIndex: 25 }} onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setTaskAdjustment(null)
+          if (event.target === event.currentTarget) {
+            closeTaskAdjustment()
+          }
         }}>
-          <div className="modal sentence-composer-modal">
-            <div className="minimal-task-composer">
-              <div className="minimal-sentence-row">
-                <span className="minimal-sentence-prefix">I want to</span>
-                <input
-                  className="minimal-task-input active-sentence-input"
-                  value={taskAdjustment.title}
-                  onChange={(event) => setTaskAdjustment((previous) => previous ? { ...previous, title: event.target.value } : previous)}
-                  style={{ width: Math.max(12, taskAdjustment.title.length + 2) + 'ch' }}
-                />
-                <SentenceSpinner
-                  className={SENTENCE_INLINE_SPINNER_CLASS}
-                  active={false}
-                  ariaLabel="Sentence mode"
-                  selectedIndex={Math.max(0, TASK_SENTENCE_MODE_OPTIONS.findIndex((o) => o.id === taskAdjustment.sentenceMode))}
-                  options={TASK_SENTENCE_MODE_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                  onRotate={(delta) => {
-                    const currentIdx = Math.max(0, TASK_SENTENCE_MODE_OPTIONS.findIndex((o) => o.id === taskAdjustment.sentenceMode))
-                    const newIdx = rotateIndex(currentIdx, TASK_SENTENCE_MODE_OPTIONS.length, delta)
-                    setTaskAdjustment((prev) => prev ? { ...prev, sentenceMode: TASK_SENTENCE_MODE_OPTIONS[newIdx].id } : prev)
-                  }}
-                />
-
-                {taskAdjustment.sentenceMode === 'every' && (
-                  <>
-                    <SentenceSpinner
-                      className={SENTENCE_INLINE_SPINNER_CLASS}
-                      active={false}
-                      ariaLabel="Frequency count"
-                      selectedIndex={Math.max(0, FREQUENCY_COUNT_OPTIONS.findIndex((o) => o.id === taskAdjustment.frequencyCount))}
-                      options={FREQUENCY_COUNT_OPTIONS.map((option) => ({ id: option.id, label: option.label || '1' }))}
-                      onRotate={(delta) => {
-                        const currentIdx = Math.max(0, FREQUENCY_COUNT_OPTIONS.findIndex((o) => o.id === taskAdjustment.frequencyCount))
-                        const newIdx = rotateIndex(currentIdx, FREQUENCY_COUNT_OPTIONS.length, delta)
-                        setTaskAdjustment((prev) => prev ? { ...prev, frequencyCount: FREQUENCY_COUNT_OPTIONS[newIdx].id } : prev)
-                      }}
-                    />
-                    <SentenceSpinner
-                      className={SENTENCE_INLINE_SPINNER_CLASS}
-                      active={false}
-                      ariaLabel="Frequency unit"
-                      selectedIndex={Math.max(0, FREQUENCY_STARTER_OPTIONS.findIndex((o) => o.id === taskAdjustment.frequencyStarter))}
-                      options={FREQUENCY_STARTER_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={(delta) => {
-                        const currentIdx = Math.max(0, FREQUENCY_STARTER_OPTIONS.findIndex((o) => o.id === taskAdjustment.frequencyStarter))
-                        const newIdx = rotateIndex(currentIdx, FREQUENCY_STARTER_OPTIONS.length, delta)
-                        setTaskAdjustment((prev) => prev ? { ...prev, frequencyStarter: FREQUENCY_STARTER_OPTIONS[newIdx].id } : prev)
-                      }}
-                    />
-                  </>
-                )}
-
-                {['at-least', 'exactly', 'more-than'].includes(taskAdjustment.sentenceMode) && (
-                  <>
-                    <SentenceSpinner
-                      className={SENTENCE_INLINE_SPINNER_CLASS}
-                      active={false}
-                      ariaLabel="Count"
-                      selectedIndex={Math.max(0, COUNT_OPTIONS.findIndex((o) => o.id === taskAdjustment.countChoice))}
-                      options={COUNT_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={(delta) => {
-                        const currentIdx = Math.max(0, COUNT_OPTIONS.findIndex((o) => o.id === taskAdjustment.countChoice))
-                        const newIdx = rotateIndex(currentIdx, COUNT_OPTIONS.length, delta)
-                        setTaskAdjustment((prev) => prev ? { ...prev, countChoice: COUNT_OPTIONS[newIdx].id } : prev)
-                      }}
-                    />
-                    <span className="minimal-times-word">times</span>
-                  </>
-                )}
+          <div className="modal sentence-composer-modal entry-modal-narrow">
+            <div className="entry-shell">
+              <div className="entry-header">
+                <p className="entry-sentence">{taskAdjustmentProgressSentence}</p>
               </div>
 
-              <p className="minimal-sentence-row subjective-sentence-row">
-                <span className="minimal-sentence-prefix">I think this task is</span>
-                <SentenceSpinner
-                  className={SENTENCE_INLINE_SPINNER_CLASS}
-                  active={false}
-                  ariaLabel="Importance"
-                  selectedIndex={adjustImportanceIndex}
-                  options={SUBJECTIVE_OPTIONS_BY_CATEGORY.importance.map((option) => ({ id: option.id, label: option.label }))}
-                  onRotate={(delta) => {
-                    const newIndex = rotateIndex(adjustImportanceIndex, SUBJECTIVE_OPTIONS_BY_CATEGORY.importance.length, delta)
-                    setTaskAdjustment((previous) => previous ? { ...previous, importance: SUBJECTIVE_OPTIONS_BY_CATEGORY.importance[newIndex].id } : previous)
-                  }}
-                />
-                <span className="minimal-subjective-separator">,</span>
-                <SentenceSpinner
-                  className={SENTENCE_INLINE_SPINNER_CLASS}
-                  active={false}
-                  ariaLabel="Difficulty"
-                  selectedIndex={adjustGrandnessIndex}
-                  options={SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty.map((option) => ({ id: option.id, label: option.label }))}
-                  onRotate={(delta) => {
-                    const newIndex = rotateIndex(adjustGrandnessIndex, SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty.length, delta)
-                    setTaskAdjustment((previous) => previous ? { ...previous, grandness: SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty[newIndex].id } : previous)
-                  }}
-                />
-                <span className="minimal-subjective-separator">,</span>
-                <SentenceSpinner
-                  className={SENTENCE_INLINE_SPINNER_CLASS}
-                  active={false}
-                  ariaLabel="Subjective time"
-                  selectedIndex={adjustTimeIndex}
-                  options={SUBJECTIVE_OPTIONS_BY_CATEGORY.time.map((option) => ({ id: option.id, label: option.label }))}
-                  onRotate={(delta) => {
-                    const newIndex = rotateIndex(adjustTimeIndex, SUBJECTIVE_OPTIONS_BY_CATEGORY.time.length, delta)
-                    setTaskAdjustment((previous) => previous ? { ...previous, subjectiveTime: SUBJECTIVE_OPTIONS_BY_CATEGORY.time[newIndex].id } : previous)
-                  }}
-                />
-                <span className="minimal-subjective-connector">and requires</span>
-                <SentenceSpinner
-                  className={SENTENCE_INLINE_SPINNER_CLASS}
-                  active={false}
-                  ariaLabel="Focus"
-                  selectedIndex={adjustFocusIndex}
-                  options={SUBJECTIVE_OPTIONS_BY_CATEGORY.focus.map((option) => ({ id: option.id, label: option.label }))}
-                  onRotate={(delta) => {
-                    const newIndex = rotateIndex(adjustFocusIndex, SUBJECTIVE_OPTIONS_BY_CATEGORY.focus.length, delta)
-                    setTaskAdjustment((previous) => previous ? { ...previous, focus: SUBJECTIVE_OPTIONS_BY_CATEGORY.focus[newIndex].id } : previous)
-                  }}
-                />
-                <span className="minimal-subjective-period">.</span>
-              </p>
-
-              <div className="minimal-sentence-row subjective-sentence-row">
-                <span className="minimal-sentence-prefix">It belongs to</span>
-                {adjustSelectedCategoryLabels.map((tag) => (
-                  <span key={tag} className="tag-chip-inline">
-                    {tag}
-                    <button type="button" className="tag-remove-btn" onClick={() => removeAdjustCategoryTag(tag)} aria-label={`Remove ${tag}`}>×</button>
-                  </span>
-                ))}
-                <span className="sentence-dropdown">
-                  <input
-                    className={`sentence-dropdown-input${adjustCategoryInput ? ' has-query' : ''}`}
-                    value={adjustCategoryInput}
-                    onChange={(event) => {
-                      setAdjustCategoryInput(event.target.value)
-                      setAdjustCategorySuggestionIndex(0)
-                      setAdjustCategoryPickerOpen(true)
-                    }}
-                    onKeyDown={handleAdjustCategoryKeyDown}
-                    onFocus={() => setAdjustCategoryPickerOpen(true)}
-                    onBlur={() => {
-                      setTimeout(() => {
-                        if (adjustCategoryInput.trim()) addAdjustCategoryTag(adjustCategoryInput)
-                        setAdjustCategoryPickerOpen(false)
-                      }, 150)
-                    }}
-                    placeholder="+ category"
-                  />
-                  {adjustCategoryPickerOpen && adjustCategorySuggestions.length > 0 && (
-                    <div className="sentence-dropdown-list" role="listbox" aria-label="Category suggestions">
-                      {adjustCategorySuggestions.map((label, index) => (
-                        <button
-                          key={label}
-                          type="button"
-                          className={`sentence-dropdown-item${index === adjustCategorySuggestionIndex ? ' active-suggestion' : ''}`}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => addAdjustCategoryTag(label)}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                      {normalizedAdjustCategoryQuery.length > 0 && !adjustCategorySuggestions.includes(normalizedAdjustCategoryQuery) && (
-                        <button
-                          type="button"
-                          className="sentence-dropdown-item sentence-dropdown-create"
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => addAdjustCategoryTag(adjustCategoryInput)}
-                        >
-                          create &ldquo;{normalizeTagLabel(adjustCategoryInput)}&rdquo;
-                        </button>
-                      )}
+              <div className="entry-body entry-body-compact">
+                {taskAdjustmentCurrentStep === 'summary' && (
+                  <div className="entry-stack">
+                    <div className="entry-option-grid compact-option-grid">
+                      <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('title')}>
+                        <strong>Description</strong>
+                      </button>
+                      <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('importance')}>
+                        <strong>Details</strong>
+                      </button>
+                      <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('category')}>
+                        <strong>Categories</strong>
+                      </button>
+                      <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('context')}>
+                        <strong>Context</strong>
+                      </button>
+                      <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('notes')}>
+                        <strong>Notes</strong>
+                      </button>
                     </div>
-                  )}
-                </span>
-                <span className="minimal-sentence-prefix">category.</span>
-              </div>
+                  </div>
+                )}
 
-              <div className="minimal-sentence-row subjective-sentence-row">
-                <span className="minimal-sentence-prefix">Preferably</span>
-                {taskAdjustment.preferredContexts.map((ctx, idx) => {
-                  const concept = sharedConcepts.find((c) => c.id === ctx.conceptId)
-                  return concept ? (
-                    <span key={`${ctx.conceptId}-${idx}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                      {idx > 0 && (
-                        <button
-                          type="button"
-                          className="expr-connector-btn"
-                          style={{ fontSize: '0.75rem', margin: '0 2px' }}
-                          onClick={() => setTaskAdjustment((prev) => prev ? { ...prev, contextConnector: prev.contextConnector === 'and' ? 'or' : 'and' } : prev)}
-                        >
-                          {taskAdjustment.contextConnector}
-                        </button>
-                      )}
-                      <SentenceSpinner
-                        className={SENTENCE_INLINE_SPINNER_CLASS}
-                        active={false}
-                        ariaLabel={`Qualifier for ${concept.label}`}
-                        selectedIndex={Math.max(0, TIMEFRAME_QUALIFIER_OPTIONS.findIndex((o) => o.id === ctx.qualifier))}
-                        options={TIMEFRAME_QUALIFIER_OPTIONS.filter((o) => o.id !== 'none').map((o) => ({ id: o.id, label: o.label }))}
-                        onRotate={(delta) => {
-                          const opts = TIMEFRAME_QUALIFIER_OPTIONS.filter((o) => o.id !== 'none')
-                          const curIdx = Math.max(0, opts.findIndex((o) => o.id === ctx.qualifier))
-                          const newIdx = rotateIndex(curIdx, opts.length, delta)
-                          setTaskAdjustment((prev) => prev ? {
-                            ...prev,
-                            preferredContexts: prev.preferredContexts.map((c, i) => i === idx ? { ...c, qualifier: opts[newIdx].id } : c),
-                          } : prev)
-                        }}
-                      />
-                      <span className="tag-chip-inline">
-                        {concept.label}
-                        <button type="button" className="tag-remove-btn" onClick={() => setTaskAdjustment((prev) => prev ? { ...prev, preferredContexts: prev.preferredContexts.filter((_, i) => i !== idx) } : prev)} aria-label={`Remove ${concept.label}`}>×</button>
-                      </span>
-                    </span>
-                  ) : null
-                })}
-                <span className="sentence-dropdown">
+                {taskAdjustmentCurrentStep === 'title' && (
                   <input
-                    className={`sentence-dropdown-input${adjustContextInput ? ' has-query' : ''}`}
-                    value={adjustContextInput}
-                    onChange={(event) => {
-                      setAdjustContextInput(event.target.value)
-                      setAdjustContextSuggestionIndex(0)
-                      setAdjustContextPickerOpen(true)
-                    }}
+                    className="entry-title-input"
+                    value={taskAdjustment.title}
+                    onChange={(event) => setTaskAdjustment((previous) => previous ? { ...previous, title: event.target.value } : previous)}
                     onKeyDown={(event) => {
-                      const available = sharedConcepts.filter((c) => !taskAdjustment.preferredContexts.some((ctx) => ctx.conceptId === c.id)).filter((c) => !adjustContextInput || c.label.toLowerCase().includes(adjustContextInput.toLowerCase()))
-                      if (event.key === 'ArrowDown') { event.preventDefault(); setAdjustContextSuggestionIndex((i) => rotateIndex(i, Math.max(1, available.length), 1)) }
-                      else if (event.key === 'ArrowUp') { event.preventDefault(); setAdjustContextSuggestionIndex((i) => rotateIndex(i, Math.max(1, available.length), -1)) }
-                      else if (event.key === 'Enter') {
+                      if (event.key === 'Enter' && taskAdjustment.title.trim()) {
                         event.preventDefault()
-                        const picked = available[adjustContextSuggestionIndex]
-                        if (picked) {
-                          setTaskAdjustment((prev) => prev ? { ...prev, preferredContexts: [...prev.preferredContexts, { conceptId: picked.id, qualifier: 'during' }] } : prev)
-                          setAdjustContextInput('')
-                          setAdjustContextPickerOpen(false)
-                        }
-                      } else if (event.key === 'Escape') { setAdjustContextPickerOpen(false) }
+                        advanceAdjustmentBranch(taskAdjustment, 'title', ADJUSTMENT_DESCRIPTION_STEPS)
+                      }
                     }}
-                    onFocus={() => setAdjustContextPickerOpen(true)}
-                    onBlur={() => setTimeout(() => setAdjustContextPickerOpen(false), 150)}
-                    placeholder="+ context"
+                    placeholder="clean the apartment"
+                    autoFocus
                   />
-                  {adjustContextPickerOpen && (() => {
-                    const available = sharedConcepts.filter((c) => !taskAdjustment.preferredContexts.some((ctx) => ctx.conceptId === c.id)).filter((c) => !adjustContextInput || c.label.toLowerCase().includes(adjustContextInput.toLowerCase()))
-                    return available.length > 0 ? (
-                      <div className="sentence-dropdown-list" role="listbox" aria-label="Context suggestions">
-                        {available.map((concept, index) => (
-                          <button
-                            key={concept.id}
-                            type="button"
-                            className={`sentence-dropdown-item${index === adjustContextSuggestionIndex ? ' active-suggestion' : ''}`}
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => {
-                              setTaskAdjustment((prev) => prev ? { ...prev, preferredContexts: [...prev.preferredContexts, { conceptId: concept.id, qualifier: 'during' }] } : prev)
-                              setAdjustContextInput('')
-                              setAdjustContextPickerOpen(false)
-                            }}
-                          >
-                            {concept.label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null
-                  })()}
-                </span>
-              </div>
+                )}
 
-              <textarea className="text-input note-box" placeholder="Note about what good enough means for this task" value={taskAdjustment.notes} onChange={(event) => setTaskAdjustment((previous) => previous ? { ...previous, notes: event.target.value } : previous)} />
-
-              {(() => {
-                const skipNotes = state.logs
-                  .filter((log) => log.userTaskProfileId === taskAdjustment.userTaskProfileId && log.action === 'skip' && log.note)
-                  .slice(-5)
-                return skipNotes.length > 0 ? (
-                  <div className="skip-reasons" style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(254,243,199,0.3)', borderRadius: 6 }}>
-                    <p className="subtle-text" style={{ fontWeight: 600, marginBottom: 4 }}>Recent skip reasons:</p>
-                    {skipNotes.map((log) => (
-                      <p key={log.id} className="subtle-text" style={{ margin: '2px 0', fontStyle: 'italic' }}>↩ {log.note} <span style={{ opacity: 0.5 }}>({timeAgo(log.createdAt)})</span></p>
+                {taskAdjustmentCurrentStep === 'mode' && (
+                  <div className="entry-option-grid">
+                    {TASK_SENTENCE_MODE_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.sentenceMode === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, sentenceMode: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'mode', ADJUSTMENT_DESCRIPTION_STEPS)
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
                     ))}
                   </div>
-                ) : null
-              })()}
+                )}
 
-              <div className="minimal-composer-actions">
-                <button className="secondary-btn" onClick={() => { setTaskAdjustment(null); setAdjustCategoryInput(''); setAdjustCategoryPickerOpen(false) }}>Cancel</button>
-                <button className="primary-btn" onClick={saveTaskAdjustment}>Save</button>
+                {taskAdjustmentCurrentStep === 'frequency-starter' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {FREQUENCY_STARTER_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.frequencyStarter === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, frequencyStarter: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'frequency-starter', ADJUSTMENT_DESCRIPTION_STEPS)
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'frequency-count' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {FREQUENCY_COUNT_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.frequencyCount === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, frequencyCount: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'frequency-count', ADJUSTMENT_DESCRIPTION_STEPS)
+                        }}
+                      >
+                        <strong>{frequencyCountStepLabel(option)}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'count' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {COUNT_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.countChoice === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, countChoice: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'count', ADJUSTMENT_DESCRIPTION_STEPS)
+                        }}
+                      >
+                        <strong>{option.label} times</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'timeframe' && (
+                  <div className="entry-option-grid">
+                    {timeframeOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.timeframe === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const allowed = allowedTimeframeQualifiers(option.id)
+                          const nextAdjustment = {
+                            ...taskAdjustment,
+                            timeframe: option.id,
+                            timeframeQualifier: allowed.includes(taskAdjustment.timeframeQualifier) ? taskAdjustment.timeframeQualifier : allowed[0] ?? 'none',
+                          }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'timeframe', ADJUSTMENT_DESCRIPTION_STEPS)
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'timeframe-qualifier' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {TIMEFRAME_QUALIFIER_OPTIONS.filter((option) => allowedTimeframeQualifiers(taskAdjustment.timeframe).includes(option.id)).map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.timeframeQualifier === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, timeframeQualifier: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'timeframe-qualifier', ADJUSTMENT_DESCRIPTION_STEPS)
+                        }}
+                      >
+                        <strong>{option.id === 'none' ? 'anytime' : option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'importance' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.importance.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.importance === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, importance: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'importance', ADJUSTMENT_DETAIL_STEPS)
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'difficulty' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.grandness === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, grandness: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'difficulty', ADJUSTMENT_DETAIL_STEPS)
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'time' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.time.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.subjectiveTime === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, subjectiveTime: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'time', ADJUSTMENT_DETAIL_STEPS)
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'focus' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.focus.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskAdjustment.focus === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextAdjustment = { ...taskAdjustment, focus: option.id }
+                          setTaskAdjustment(nextAdjustment)
+                          advanceAdjustmentBranch(nextAdjustment, 'focus', ADJUSTMENT_DETAIL_STEPS)
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'category' && (
+                  <div className="entry-section">
+                    <input
+                      className={`sentence-dropdown-input${adjustCategoryInput ? ' has-query' : ''}`}
+                      value={adjustCategoryInput}
+                      onChange={(event) => {
+                        setAdjustCategoryInput(event.target.value)
+                        setAdjustCategorySuggestionIndex(0)
+                        setAdjustCategoryPickerOpen(true)
+                      }}
+                      onKeyDown={handleAdjustCategoryKeyDown}
+                      onFocus={() => setAdjustCategoryPickerOpen(true)}
+                      onBlur={() => setTimeout(() => setAdjustCategoryPickerOpen(false), 150)}
+                      placeholder="Search categories"
+                      autoFocus
+                    />
+                    {(adjustCategoryPickerOpen || !adjustCategoryInput) && (
+                      <div className="entry-option-scroll">
+                        <div className="entry-option-grid compact-option-grid">
+                          {visibleAdjustCategoryOptions.map((label) => (
+                            <button
+                              key={label}
+                              type="button"
+                              className={`entry-option-card${adjustSelectedCategoryLabels.includes(label) ? ' selected' : ''}`}
+                              onClick={() => addAdjustCategoryTag(label)}
+                            >
+                              <strong>{label}</strong>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="entry-inline-row">
+                      {adjustSelectedCategoryLabels.map((tag) => (
+                        <span key={tag} className="tag-chip-inline">
+                          {tag}
+                          <button type="button" className="tag-remove-btn" onClick={() => removeAdjustCategoryTag(tag)} aria-label={`Remove ${tag}`}>×</button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'context' && (
+                  <div className="entry-section">
+                    {!adjustPendingContext && (
+                      <>
+                        <input
+                          className={`sentence-dropdown-input${adjustContextInput ? ' has-query' : ''}`}
+                          value={adjustContextInput}
+                          onChange={(event) => {
+                            setAdjustContextInput(event.target.value)
+                            setAdjustContextSuggestionIndex(0)
+                            setAdjustContextPickerOpen(true)
+                          }}
+                          onKeyDown={handleAdjustContextKeyDown}
+                          onFocus={() => setAdjustContextPickerOpen(true)}
+                          onBlur={() => setTimeout(() => setAdjustContextPickerOpen(false), 150)}
+                          placeholder="Search context"
+                          autoFocus
+                        />
+                        {(adjustContextPickerOpen || !adjustContextInput) && (
+                          <div className="entry-option-scroll">
+                            <div className="entry-option-grid compact-option-grid">
+                              {visibleAdjustContexts.map((concept) => (
+                                <button
+                                  key={concept.id}
+                                  type="button"
+                                  className="entry-option-card"
+                                  onClick={() => {
+                                    setAdjustPendingContextId(concept.id)
+                                    setAdjustContextQualifier(conceptSpecifiers(concept)[0] ?? 'during')
+                                  }}
+                                >
+                                  <strong>{concept.label}</strong>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {adjustPendingContext && (
+                      <div className="entry-stack">
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => {
+                            setAdjustPendingContextId(null)
+                            setAdjustContextQualifier(conceptSpecifiers(adjustPendingContext)[0] ?? 'during')
+                          }}
+                        >
+                          {adjustPendingContext.label}
+                        </button>
+                        <div className="entry-option-grid compact-option-grid">
+                          {adjustPendingContextQualifiers.map((qualifier) => {
+                            const isSelected = taskAdjustment.preferredContexts.some((context) => context.conceptId === adjustPendingContext.id && context.qualifier === qualifier)
+                            return (
+                              <button
+                                key={`${adjustPendingContext.id}-${qualifier}`}
+                                type="button"
+                                className={`entry-option-card${isSelected ? ' selected' : ''}`}
+                                onClick={() => addAdjustContext(adjustPendingContext.id, qualifier)}
+                              >
+                                <strong>{qualifier}</strong>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    <div className="entry-inline-row">
+                      {taskAdjustment.preferredContexts.map((context, index) => {
+                        const concept = sharedConcepts.find((entry) => entry.id === context.conceptId)
+                        if (!concept) return null
+                        return (
+                          <span key={`${context.conceptId}-${context.qualifier}-${index}`} className="tag-chip-inline">
+                            {context.qualifier} {concept.label}
+                            <button type="button" className="tag-remove-btn" onClick={() => removeAdjustContext(context.conceptId, context.qualifier)} aria-label={`Remove ${concept.label}`}>
+                              ×
+                            </button>
+                          </span>
+                        )
+                      })}
+                    </div>
+                    {taskAdjustment.preferredContexts.length > 1 && (
+                      <button
+                        type="button"
+                        className="choice-pill"
+                        onClick={() => setTaskAdjustment((previous) => previous ? {
+                          ...previous,
+                          contextConnector: previous.contextConnector === 'and' ? 'or' : 'and',
+                        } : previous)}
+                      >
+                        {taskAdjustment.contextConnector}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {taskAdjustmentCurrentStep === 'notes' && (
+                  <div className="entry-stack">
+                    <textarea
+                      className="text-input note-box"
+                      placeholder="Note about what good enough means for this task"
+                      value={taskAdjustment.notes}
+                      onChange={(event) => setTaskAdjustment((previous) => previous ? { ...previous, notes: event.target.value } : previous)}
+                      autoFocus
+                    />
+                    {(() => {
+                      const skipNotes = state.logs
+                        .filter((log) => log.userTaskProfileId === taskAdjustment.userTaskProfileId && log.action === 'skip' && log.note)
+                        .slice(-5)
+                      return skipNotes.length > 0 ? (
+                        <div className="skip-reasons" style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(254,243,199,0.3)', borderRadius: 6 }}>
+                          {skipNotes.map((log) => (
+                            <p key={log.id} className="subtle-text" style={{ margin: '2px 0', fontStyle: 'italic' }}>↩ {log.note} <span style={{ opacity: 0.5 }}>({timeAgo(log.createdAt)})</span></p>
+                          ))}
+                        </div>
+                      ) : null
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              <div className="entry-footer">
+                <button
+                  className={taskAdjustmentCurrentStep === 'summary' ? 'secondary-btn danger-btn' : 'secondary-btn'}
+                  onClick={taskAdjustmentCurrentStep === 'summary' ? deleteTaskAdjustment : goBackFromAdjustment}
+                >
+                  {taskAdjustmentCurrentStep === 'summary' ? 'Delete' : 'Back'}
+                </button>
+                <div className="entry-footer-actions">
+                  {taskAdjustmentCurrentStep === 'summary' && (
+                    <button className="primary-btn" onClick={saveTaskAdjustment}>Done</button>
+                  )}
+                  {taskAdjustmentCurrentStep === 'notes' && (
+                    <button className="primary-btn" onClick={returnToAdjustmentMainPage}>Done</button>
+                  )}
+                  {taskAdjustmentCurrentStep === 'title' && (
+                    <button className="primary-btn" onClick={() => advanceAdjustmentBranch(taskAdjustment, 'title', ADJUSTMENT_DESCRIPTION_STEPS)} disabled={!taskAdjustment.title.trim()}>Continue</button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -3857,343 +4839,439 @@ function App() {
         <div className="overlay" role="dialog" aria-modal="true" onMouseDown={(event) => {
           if (event.target === event.currentTarget) {
             setTaskComposerOpen(false)
+            setTaskComposerUiStepIndex(0)
+            setTaskComposerOptionalPath(null)
           }
         }}>
-          <div className="modal sentence-composer-modal">
-            <div className="minimal-task-composer">
-              <div className="minimal-sentence-row">
-                <span className="minimal-sentence-prefix">I want to</span>
-                <span ref={nameMeasureRef} className="minimal-task-measure" aria-hidden="true" />
-                <input
-                  ref={nameInputRef}
-                  className={sentenceCaret === 'name' ? 'minimal-task-input active-sentence-input' : 'minimal-task-input'}
-                  value={taskDraft.actionText}
-                  onChange={(event) => setTaskDraft((previous) => ({ ...previous, actionText: event.target.value }))}
-                  onKeyDown={handleTaskComposerKeyDown}
-                  onFocus={() => setSentenceCaret('name')}
-                  style={{ width: taskDraft.actionText.trim().length > 0 ? `${taskInputWidthPx}px` : '18ch' }}
-                  placeholder="clean the apartment"
-                />
-                {showTaskCadenceTeaser && (
-                  <SentenceSpinner
-                    spinnerRef={modeSpinnerRef}
-                    className="minimal-cadence-teaser inline-cadence fade-in-inline"
-                    active={sentenceCaret === 'mode'}
-                    ariaLabel="Sentence mode"
-                    selectedIndex={taskSentenceModeIndex}
-                    options={TASK_SENTENCE_MODE_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                    onRotate={rotateTaskSentenceMode}
-                    onTouchStart={handleTaskComposerTouchStart}
-                    onTouchEnd={handleTaskComposerTouchEnd}
-                    onFocus={() => setSentenceCaret('mode')}
-                    onKeyDown={handleSpinnerKeyDown}
+          <div className="modal sentence-composer-modal entry-modal-narrow">
+            <div className="entry-shell">
+              <div className="entry-header">
+                <p className="entry-sentence">{taskComposerProgressSentence}</p>
+              </div>
+
+              <div className="entry-body entry-body-compact">
+                {taskComposerCurrentStep === 'name' && (
+                  <input
+                    ref={nameInputRef}
+                    className="entry-title-input"
+                    value={taskDraft.actionText}
+                    onChange={(event) => setTaskDraft((previous) => ({ ...previous, actionText: event.target.value }))}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && taskDraft.actionText.trim()) {
+                        event.preventDefault()
+                        advanceComposer(taskDraft, 'name')
+                      }
+                    }}
+                    placeholder="clean the apartment"
+                    autoFocus
                   />
                 )}
 
-                {showTaskCadenceTeaser && renderedSentenceMode === 'every' && (
-                  <>
-                    <SentenceSpinner
-                      spinnerRef={frequencyCountSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-1"
-                      active={sentenceCaret === 'frequency-count'}
-                      ariaLabel="Frequency count"
-                      selectedIndex={frequencyCountIndex}
-                      options={FREQUENCY_COUNT_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={rotateFrequencyCount}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('frequency-count')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-
-                    <SentenceSpinner
-                      spinnerRef={frequencySpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-1"
-                      active={sentenceCaret === 'frequency-starter'}
-                      ariaLabel="Frequency starter"
-                      selectedIndex={frequencyStarterIndex}
-                      options={FREQUENCY_STARTER_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={rotateFrequencyStarter}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('frequency-starter')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-
-                    <SentenceSpinner
-                      spinnerRef={timeframeQualifierSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-2"
-                      active={sentenceCaret === 'timeframe-qualifier'}
-                      ariaLabel="Timeframe qualifier"
-                      selectedIndex={timeframeQualifierIndex}
-                      options={TIMEFRAME_QUALIFIER_OPTIONS.map((option) => {
-                        const selectedTimeframe = timeframeOptions[timeframeIndex]?.id ?? 'in-general'
-                        const allowed = allowedTimeframeQualifiers(selectedTimeframe)
-                        return {
-                          id: option.id,
-                          label: option.label,
-                          disabled: !allowed.includes(option.id),
-                        }
-                      })}
-                      onRotate={rotateTimeframeQualifier}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('timeframe-qualifier')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-
-                    <SentenceSpinner
-                      spinnerRef={timeframeSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-2"
-                      active={sentenceCaret === 'timeframe'}
-                      ariaLabel="Timeframe"
-                      selectedIndex={timeframeIndex}
-                      options={timeframeOptions.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={rotateTimeframe}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('timeframe')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-                  </>
+                {taskComposerCurrentStep === 'mode' && (
+                  <div className="entry-option-grid">
+                    {TASK_SENTENCE_MODE_OPTIONS.map((option, index) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskDraft.sentenceMode === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextDraft = { ...taskDraft, sentenceMode: option.id }
+                          setTaskSentenceModeIndex(index)
+                          setTaskDraft(nextDraft)
+                          advanceComposer(nextDraft, 'mode')
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
                 )}
 
-                {showTaskCadenceTeaser && renderedSentenceMode === 'one-time' && (
-                  <>
-                    <SentenceSpinner
-                      spinnerRef={timeframeQualifierSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-1"
-                      active={sentenceCaret === 'timeframe-qualifier'}
-                      ariaLabel="One-time qualifier"
-                      selectedIndex={timeframeQualifierIndex}
-                      options={TIMEFRAME_QUALIFIER_OPTIONS.map((option) => {
-                        const selectedTimeframe = timeframeOptions[timeframeIndex]?.id ?? 'in-general'
-                        const allowed = allowedTimeframeQualifiers(selectedTimeframe)
-                        return {
-                          id: option.id,
-                          label: option.label,
-                          disabled: !allowed.includes(option.id),
-                        }
-                      })}
-                      onRotate={rotateTimeframeQualifier}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('timeframe-qualifier')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-
-                    <SentenceSpinner
-                      spinnerRef={timeframeSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-2"
-                      active={sentenceCaret === 'timeframe'}
-                      ariaLabel="One-time timeframe"
-                      selectedIndex={timeframeIndex}
-                      options={timeframeOptions.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={rotateTimeframe}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('timeframe')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-                  </>
+                {taskComposerCurrentStep === 'frequency-starter' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {FREQUENCY_STARTER_OPTIONS.map((option, index) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskDraft.frequencyStarter === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextDraft = { ...taskDraft, frequencyStarter: option.id, unit: option.id, every: Number(taskDraft.frequencyCount) || 1 }
+                          setFrequencyStarterIndex(index)
+                          setTaskDraft(nextDraft)
+                          advanceComposer(nextDraft, 'frequency-starter')
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
                 )}
 
-                {showTaskCadenceTeaser && ['at-least', 'exactly', 'more-than'].includes(renderedSentenceMode) && (
-                  <>
-                    <SentenceSpinner
-                      element="div"
-                      spinnerRef={countSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-1"
-                      active={sentenceCaret === 'count'}
-                      ariaLabel="Count choice"
-                      selectedIndex={countOptionIndex}
-                      options={COUNT_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={rotateCountOption}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('count')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-                    <span className="minimal-times-word fade-in-inline trickle-stage-2">times</span>
-                    <SentenceSpinner
-                      spinnerRef={timeframeQualifierSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-2"
-                      active={sentenceCaret === 'timeframe-qualifier'}
-                      ariaLabel="Quantity qualifier"
-                      selectedIndex={timeframeQualifierIndex}
-                      options={TIMEFRAME_QUALIFIER_OPTIONS.map((option) => {
-                        const selectedTimeframe = timeframeOptions[timeframeIndex]?.id ?? 'in-general'
-                        const allowed = allowedTimeframeQualifiers(selectedTimeframe)
-                        return {
-                          id: option.id,
-                          label: option.label,
-                          disabled: !allowed.includes(option.id),
-                        }
-                      })}
-                      onRotate={rotateTimeframeQualifier}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('timeframe-qualifier')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-                    <SentenceSpinner
-                      spinnerRef={timeframeSpinnerRef}
-                      className="minimal-cadence-teaser minimal-inline-spinner fade-in-inline trickle-stage-2"
-                      active={sentenceCaret === 'timeframe'}
-                      ariaLabel="Quantity timeframe"
-                      selectedIndex={timeframeIndex}
-                      options={timeframeOptions.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={rotateTimeframe}
-                      onTouchStart={handleTaskComposerTouchStart}
-                      onTouchEnd={handleTaskComposerTouchEnd}
-                      onFocus={() => setSentenceCaret('timeframe')}
-                      onKeyDown={handleSpinnerKeyDown}
-                    />
-                  </>
+                {taskComposerCurrentStep === 'frequency-count' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {FREQUENCY_COUNT_OPTIONS.map((option, index) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskDraft.frequencyCount === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextDraft = { ...taskDraft, frequencyCount: option.id, every: Number(option.id) || 1 }
+                          setFrequencyCountIndex(index)
+                          setTaskDraft(nextDraft)
+                          advanceComposer(nextDraft, 'frequency-count')
+                        }}
+                      >
+                        <strong>{frequencyCountStepLabel(option)}</strong>
+                      </button>
+                    ))}
+                  </div>
                 )}
 
-                {sentenceComplete && !showSubjectiveComposer && (
-                  <button
-                    type="button"
-                    className="sentence-inline-trigger fade-in-inline"
-                    onClick={() => {
-                      setShowSubjectiveComposer(true)
-                      setSubjectiveCaret('importance')
-                    }}
-                  >
-                    + subjective view
-                  </button>
+                {taskComposerCurrentStep === 'count' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {COUNT_OPTIONS.map((option, index) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskDraft.countChoice === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextDraft = { ...taskDraft, countChoice: option.id }
+                          setCountOptionIndex(index)
+                          setTaskDraft(nextDraft)
+                          advanceComposer(nextDraft, 'count')
+                        }}
+                      >
+                        <strong>{option.label} times</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'timeframe' && (
+                  <div className="entry-option-grid">
+                    {timeframeOptions.map((option, index) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskDraft.timeframe === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const allowed = allowedTimeframeQualifiers(option.id)
+                          const nextDraft = {
+                            ...taskDraft,
+                            timeframe: option.id,
+                            timeframeQualifier: allowed.includes(taskDraft.timeframeQualifier) ? taskDraft.timeframeQualifier : allowed[0] ?? 'none',
+                          }
+                          setTimeframeIndex(index)
+                          setTaskDraft(nextDraft)
+                          advanceComposer(nextDraft, 'timeframe')
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'timeframe-qualifier' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {TIMEFRAME_QUALIFIER_OPTIONS.filter((option) => allowedTimeframeQualifiers(taskDraft.timeframe).includes(option.id)).map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${taskDraft.timeframeQualifier === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextDraft = { ...taskDraft, timeframeQualifier: option.id }
+                          setTimeframeQualifierIndex(Math.max(0, TIMEFRAME_QUALIFIER_OPTIONS.findIndex((entry) => entry.id === option.id)))
+                          setTaskDraft(nextDraft)
+                          advanceComposer(nextDraft, 'timeframe-qualifier')
+                        }}
+                      >
+                        <strong>{option.id === 'none' ? 'anytime' : option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'details' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    <button type="button" className="entry-option-card" onClick={() => openTaskComposerOptionalPath('details')}>
+                      <strong>Details</strong>
+                    </button>
+                    <button type="button" className="entry-option-card" onClick={() => openTaskComposerOptionalPath('categories')}>
+                      <strong>Categories</strong>
+                    </button>
+                    <button type="button" className="entry-option-card" onClick={() => openTaskComposerOptionalPath('context')}>
+                      <strong>Context</strong>
+                    </button>
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'importance' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.importance.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${effectiveSubjectiveSelections.importance.id === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          setSubjectiveSelections((previous) => ({ ...previous, importance: option }))
+                          advanceComposer(taskDraft, 'importance')
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'difficulty' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${effectiveSubjectiveSelections.difficulty.id === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          setSubjectiveSelections((previous) => ({ ...previous, difficulty: option }))
+                          advanceComposer(taskDraft, 'difficulty')
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'time' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.time.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${effectiveSubjectiveSelections.time.id === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          setSubjectiveSelections((previous) => ({ ...previous, time: option }))
+                          advanceComposer(taskDraft, 'time')
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'focus' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {SUBJECTIVE_OPTIONS_BY_CATEGORY.focus.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`entry-option-card${effectiveSubjectiveSelections.focus.id === option.id ? ' selected' : ''}`}
+                        onClick={() => {
+                          setSubjectiveSelections((previous) => ({ ...previous, focus: option }))
+                          returnToTaskComposerMainPage()
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'timing' && (
+                  <div className="entry-option-grid compact-option-grid">
+                    {[{ value: false, label: 'any time' }, { value: true, label: 'pick a window' }].map((option) => (
+                      <button
+                        key={String(option.value)}
+                        type="button"
+                        className={`entry-option-card${taskDraft.timeSensitive === option.value ? ' selected' : ''}`}
+                        onClick={() => {
+                          const nextDraft = { ...taskDraft, timeSensitive: option.value }
+                          setTaskDraft(nextDraft)
+                          advanceComposer(nextDraft, 'timing')
+                        }}
+                      >
+                        <strong>{option.label}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'window' && (
+                  <div className="entry-section entry-inline-grid">
+                    <div className="entry-choice-options">
+                      {(['weekdays', 'weekends', 'any day'] as DayGroup[]).map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          className={`choice-pill${taskDraft.dayGroup === option ? ' active' : ''}`}
+                          onClick={() => setTaskDraft((previous) => ({ ...previous, dayGroup: option }))}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="entry-inline-row">
+                      <input className="text-input" type="time" value={taskDraft.start} onChange={(event) => setTaskDraft((previous) => ({ ...previous, start: event.target.value }))} />
+                      <input className="text-input" type="time" value={taskDraft.end} onChange={(event) => setTaskDraft((previous) => ({ ...previous, end: event.target.value }))} />
+                    </div>
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'category' && (
+                  <div className="entry-section">
+                    <input
+                      ref={categoryTagInputRef}
+                      className={`sentence-dropdown-input${categoryTagInput ? ' has-query' : ''}`}
+                      value={categoryTagInput}
+                      onChange={(event) => {
+                        setCategoryTagInput(event.target.value)
+                        setCategorySuggestionIndex(0)
+                        setTagPickerOpen(true)
+                      }}
+                      onKeyDown={handleCategoryTagInputKeyDown}
+                      onFocus={() => setTagPickerOpen(true)}
+                      onBlur={() => setTimeout(() => setTagPickerOpen(false), 150)}
+                      placeholder="Search categories"
+                      autoFocus
+                    />
+                    <div className="entry-option-scroll">
+                      <div className="entry-option-grid compact-option-grid">
+                        {visibleComposerCategoryOptions.map((label) => (
+                          <button
+                            key={label}
+                            type="button"
+                            className={`entry-option-card${selectedCategoryTags.includes(label) ? ' selected' : ''}`}
+                            onClick={() => addCategoryTag(label)}
+                          >
+                            <strong>{label}</strong>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="entry-inline-row">
+                      {selectedCategoryTags.map((tag) => (
+                        <span key={tag} className="tag-chip-inline">
+                          {tag}
+                          <button type="button" className="tag-remove-btn" onClick={() => removeCategoryTag(tag)} aria-label={`Remove ${tag}`}>
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {taskComposerCurrentStep === 'context' && (
+                  <div className="entry-section">
+                    {!composerPendingContext && (
+                      <>
+                        <input
+                          className={`sentence-dropdown-input${composerContextInput ? ' has-query' : ''}`}
+                          value={composerContextInput}
+                          onChange={(event) => {
+                            setComposerContextInput(event.target.value)
+                            setComposerContextSuggestionIndex(0)
+                            setComposerContextPickerOpen(true)
+                          }}
+                          onKeyDown={handleComposerContextKeyDown}
+                          onFocus={() => setComposerContextPickerOpen(true)}
+                          onBlur={() => setTimeout(() => setComposerContextPickerOpen(false), 150)}
+                          placeholder="Search context"
+                          autoFocus
+                        />
+                        <div className="entry-option-scroll">
+                          <div className="entry-option-grid compact-option-grid">
+                            {visibleComposerContexts.map((concept) => (
+                              <button
+                                key={concept.id}
+                                type="button"
+                                className="entry-option-card"
+                                onClick={() => {
+                                  setComposerPendingContextId(concept.id)
+                                  setComposerContextQualifier(conceptSpecifiers(concept)[0] ?? 'during')
+                                }}
+                              >
+                                <strong>{concept.label}</strong>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    {composerPendingContext && (
+                      <div className="entry-stack">
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => {
+                            setComposerPendingContextId(null)
+                            setComposerContextQualifier(conceptSpecifiers(composerPendingContext)[0] ?? 'during')
+                          }}
+                        >
+                          {composerPendingContext.label}
+                        </button>
+                        <div className="entry-option-grid compact-option-grid">
+                          {composerPendingContextQualifiers.map((qualifier) => {
+                            const isSelected = composerPreferredContexts.some((context) => context.conceptId === composerPendingContext.id && context.qualifier === qualifier)
+                            return (
+                              <button
+                                key={`${composerPendingContext.id}-${qualifier}`}
+                                type="button"
+                                className={`entry-option-card${isSelected ? ' selected' : ''}`}
+                                onClick={() => addComposerContext(composerPendingContext.id, qualifier)}
+                              >
+                                <strong>{qualifier}</strong>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    <div className="entry-inline-row">
+                      {composerPreferredContexts.map((context, index) => {
+                        const concept = sharedConcepts.find((entry) => entry.id === context.conceptId)
+                        if (!concept) return null
+                        return (
+                          <span key={`${context.conceptId}-${context.qualifier}-${index}`} className="tag-chip-inline">
+                            {context.qualifier} {concept.label}
+                            <button type="button" className="tag-remove-btn" onClick={() => removeComposerContext(context.conceptId, context.qualifier)} aria-label={`Remove ${concept.label}`}>
+                              ×
+                            </button>
+                          </span>
+                        )
+                      })}
+                    </div>
+                  </div>
                 )}
               </div>
 
-              {sentenceComplete && showSubjectiveComposer && (
-                <div className="reflection-stack fade-in-inline">
-                  <p className="minimal-sentence-row subjective-sentence-row">
-                    <span className="minimal-sentence-prefix">I think this task is</span>
-                    <SentenceSpinner
-                      spinnerRef={subjectiveImportanceSpinnerRef}
-                      className={SENTENCE_INLINE_SPINNER_CLASS}
-                      active={subjectiveCaret === 'importance'}
-                      ariaLabel="Task importance"
-                      selectedIndex={subjectiveIndices.importance}
-                      options={SUBJECTIVE_OPTIONS_BY_CATEGORY.importance.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={(delta) => rotateSubjectiveCategory('importance', delta)}
-                      onTouchStart={handleSubjectiveTouchStart}
-                      onTouchEnd={(event) => handleSubjectiveTouchEnd(event, 'importance')}
-                      onFocus={() => setSubjectiveCaret('importance')}
-                      onKeyDown={(event) => handleSubjectiveSpinnerKeyDown(event, 'importance')}
-                    />
-                    <span className="minimal-subjective-separator">,</span>
-                    <SentenceSpinner
-                      spinnerRef={subjectiveDifficultySpinnerRef}
-                      className={SENTENCE_INLINE_SPINNER_CLASS}
-                      active={subjectiveCaret === 'difficulty'}
-                      ariaLabel="Task difficulty"
-                      selectedIndex={subjectiveIndices.difficulty}
-                      options={SUBJECTIVE_OPTIONS_BY_CATEGORY.difficulty.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={(delta) => rotateSubjectiveCategory('difficulty', delta)}
-                      onTouchStart={handleSubjectiveTouchStart}
-                      onTouchEnd={(event) => handleSubjectiveTouchEnd(event, 'difficulty')}
-                      onFocus={() => setSubjectiveCaret('difficulty')}
-                      onKeyDown={(event) => handleSubjectiveSpinnerKeyDown(event, 'difficulty')}
-                    />
-                    <span className="minimal-subjective-separator">,</span>
-                    <SentenceSpinner
-                      spinnerRef={subjectiveTimeSpinnerRef}
-                      className={SENTENCE_INLINE_SPINNER_CLASS}
-                      active={subjectiveCaret === 'time'}
-                      ariaLabel="Task time"
-                      selectedIndex={subjectiveIndices.time}
-                      options={SUBJECTIVE_OPTIONS_BY_CATEGORY.time.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={(delta) => rotateSubjectiveCategory('time', delta)}
-                      onTouchStart={handleSubjectiveTouchStart}
-                      onTouchEnd={(event) => handleSubjectiveTouchEnd(event, 'time')}
-                      onFocus={() => setSubjectiveCaret('time')}
-                      onKeyDown={(event) => handleSubjectiveSpinnerKeyDown(event, 'time')}
-                    />
-                    <span className="minimal-subjective-connector">and requires</span>
-                    <SentenceSpinner
-                      spinnerRef={subjectiveFocusSpinnerRef}
-                      className={SENTENCE_INLINE_SPINNER_CLASS}
-                      active={subjectiveCaret === 'focus'}
-                      ariaLabel="Task focus"
-                      selectedIndex={subjectiveIndices.focus}
-                      options={SUBJECTIVE_OPTIONS_BY_CATEGORY.focus.map((option) => ({ id: option.id, label: option.label }))}
-                      onRotate={(delta) => rotateSubjectiveCategory('focus', delta)}
-                      onTouchStart={handleSubjectiveTouchStart}
-                      onTouchEnd={(event) => handleSubjectiveTouchEnd(event, 'focus')}
-                      onFocus={() => setSubjectiveCaret('focus')}
-                      onKeyDown={(event) => handleSubjectiveSpinnerKeyDown(event, 'focus')}
-                    />
-                    <span className="minimal-subjective-period">.</span>
-                  </p>
-
-                  <div className="minimal-sentence-row subjective-sentence-row">
-                    <span className="minimal-sentence-prefix">in</span>
-                    {selectedCategoryTags.map((tag) => (
-                      <span key={tag} className="tag-chip-inline">
-                        {tag}
-                        <button type="button" className="tag-remove-btn" onClick={() => removeCategoryTag(tag)} aria-label={`Remove ${tag}`}>
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                    <span className="sentence-dropdown">
-                      <input
-                        ref={categoryTagInputRef}
-                        className={`sentence-dropdown-input${categoryTagInput ? ' has-query' : ''}`}
-                        value={categoryTagInput}
-                        onChange={(event) => {
-                          setCategoryTagInput(event.target.value)
-                          setCategorySuggestionIndex(0)
-                          setTagPickerOpen(true)
-                        }}
-                        onKeyDown={handleCategoryTagInputKeyDown}
-                        onFocus={() => setTagPickerOpen(true)}
-                        onBlur={() => {
-                          setTimeout(() => {
-                            commitCategoryTagInput()
-                            setTagPickerOpen(false)
-                          }, 150)
-                        }}
-                        placeholder="+ category"
-                      />
-                      {tagPickerOpen && categorySuggestions.length > 0 && (
-                        <div className="sentence-dropdown-list" role="listbox" aria-label="Category suggestions">
-                          {categorySuggestions.map((label, index) => (
-                            <button
-                              key={label}
-                              type="button"
-                              className={`sentence-dropdown-item${index === categorySuggestionIndex ? ' active-suggestion' : ''}`}
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => addCategoryTag(label)}
-                            >
-                              {label}
-                            </button>
-                          ))}
-                          {normalizedTagQuery.length > 0 && !categorySuggestions.includes(normalizedTagQuery) && (
-                            <button
-                              type="button"
-                              className="sentence-dropdown-item sentence-dropdown-create"
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => addCategoryTag(categoryTagInput)}
-                            >
-                              create &ldquo;{normalizeTagLabel(categoryTagInput)}&rdquo;
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </span>
-                    <span className="minimal-sentence-prefix">categories.</span>
-                  </div>
+              <div className="entry-footer">
+                <button
+                  className="secondary-btn"
+                  onClick={() => {
+                    if (taskComposerCurrentStepIndex === 0) {
+                      setTaskComposerOpen(false)
+                      setTaskComposerUiStepIndex(0)
+                      setTaskComposerOptionalPath(null)
+                      return
+                    }
+                    goToComposerStep(taskComposerCurrentStepIndex - 1)
+                  }}
+                >
+                  {taskComposerCurrentStepIndex === 0 ? 'Cancel' : 'Back'}
+                </button>
+                <div className="entry-footer-actions">
+                  {taskComposerCurrentStep === 'name' && (
+                    <button className="primary-btn" onClick={() => advanceComposer(taskDraft, 'name')} disabled={!taskDraft.actionText.trim()}>Continue</button>
+                  )}
+                  {taskComposerCanSave && !taskComposerIsOptionalPath && (
+                    <button className="primary-btn" onClick={saveTask}>Done</button>
+                  )}
+                  {taskComposerCurrentStep === 'window' && (
+                    <button className="primary-btn" onClick={() => goToComposerStep(taskComposerCurrentStepIndex + 1)}>Continue</button>
+                  )}
                 </div>
-              )}
-
-              <div className="minimal-composer-actions">
-                <button className="secondary-btn" onClick={clearTaskComposer}>Clear</button>
-                {sentenceComplete && (
-                  <button className="primary-btn" onClick={saveTask}>Add</button>
-                )}
               </div>
             </div>
           </div>

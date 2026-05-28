@@ -186,6 +186,11 @@ type SentenceCaretPart = 'name' | 'mode' | 'count' | 'one-time-frame' | 'frequen
 type SkipSentenceCaret = 'scope' | 'discomfort' | 'category' | 'specifier' | 'concept'
 type SubjectiveCategory = 'importance' | 'difficulty' | 'time' | 'focus'
 
+const LOCAL_PROFILE_NAME_STORAGE_KEY = 'chores-local-profile-name'
+
+const FUN_NAME_ADJECTIVES = ['Mossy', 'Sunny', 'Bouncy', 'Cozy', 'Wiggly', 'Sparkly', 'Sleepy', 'Peppy', 'Zippy', 'Cheery']
+const FUN_NAME_NOUNS = ['Radish', 'Fox', 'Turnip', 'Robin', 'Bean', 'Otter', 'Sprout', 'Badger', 'Pear', 'Pumpkin']
+
 interface SubjectiveChoiceOption {
   id: string
   category: SubjectiveCategory
@@ -525,6 +530,26 @@ function defaultPersonDraft(): PersonDraft {
     }
 }
 
+function randomItem<T>(items: T[]): T {
+  return items[Math.floor(Math.random() * items.length)]
+}
+
+function createFunProfileName(): string {
+  return `${randomItem(FUN_NAME_ADJECTIVES)} ${randomItem(FUN_NAME_NOUNS)}`
+}
+
+function getLocalProfileName(): string {
+  const existing = window.localStorage.getItem(LOCAL_PROFILE_NAME_STORAGE_KEY)?.trim()
+  if (existing) return existing
+  const generated = createFunProfileName()
+  window.localStorage.setItem(LOCAL_PROFILE_NAME_STORAGE_KEY, generated)
+  return generated
+}
+
+function setStoredLocalProfileName(name: string): void {
+  window.localStorage.setItem(LOCAL_PROFILE_NAME_STORAGE_KEY, name.trim())
+}
+
 function taskComposerSteps(draft: TaskSentenceDraft): TaskComposerStepId[] {
   return draft.timeSensitive
     ? ['name', 'cadence', 'importance', 'grandness', 'time', 'focus', 'timing', 'window', 'review']
@@ -639,6 +664,13 @@ function personDraftFromUser(user: AppState['users'][number]): PersonDraft {
     tirednessSensitivity: user.tirednessSensitivity,
     recoveryPerHour: user.recoveryPerHour,
     difficultyBias: user.difficultyBias,
+  }
+}
+
+function personDraftFromUserWithLocalName(user: AppState['users'][number], localName: string): PersonDraft {
+  return {
+    ...personDraftFromUser(user),
+    name: localName,
   }
 }
 
@@ -825,8 +857,10 @@ function skipSentencePreview(skipFlow: SkipFlowState, categoryLabel: string | nu
 
 function App() {
   const [currentRoomId, setCurrentRoomId] = useState(() => getRoomId())
+  const [localProfileName, setLocalProfileName] = useState(() => getLocalProfileName())
   const initialState = useMemo(() => createInitialState(currentRoomId), [currentRoomId])
-  const { state, updateState, peerCount, connectionStatus, roomCode, shareUrl, onlineUsers, lastConnectionError } = useCollaborativeState(initialState)
+  const { state, updateState, peerCount, connectionStatus, roomCode, shareUrl, onlineUsers, lastConnectionError } = useCollaborativeState(initialState, localProfileName)
+  const hasSignalingProblem = Boolean(lastConnectionError)
 
   const sharedConcepts = useMemo(() => state.concepts.filter((concept) => concept.scope === 'shared'), [state.concepts])
   const timeframeOptions = useMemo<TimeframeOption[]>(() => {
@@ -842,6 +876,7 @@ function App() {
     () => state.users.find((user) => user.id === state.selectedUserId) ?? state.users[0],
     [state.selectedUserId, state.users],
   )
+  const selectedUserDisplayName = selectedUser ? localProfileName : 'right now'
 
   const feedCards = useMemo(() => (selectedUser ? getFeedCards(state, selectedUser.id) : []), [selectedUser, state])
   const analytics = useMemo(() => (selectedUser ? getWishHealth(state, selectedUser.id) : []), [selectedUser, state])
@@ -881,7 +916,11 @@ function App() {
   const [categorySuggestionIndex, setCategorySuggestionIndex] = useState(0)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
   const [taskInputWidthPx, setTaskInputWidthPx] = useState(220)
-  const [personDraft, setPersonDraft] = useState<PersonDraft>(defaultPersonDraft())
+  const [personDraft, setPersonDraft] = useState<PersonDraft>(() => {
+    const draft = defaultPersonDraft()
+    draft.name = getLocalProfileName()
+    return draft
+  })
   const [conceptDraft, setConceptDraft] = useState<ConceptDraft>(defaultConceptDraft())
   const [definitionDraft, setDefinitionDraft] = useState<DefinitionDraft>(defaultDefinitionDraft(initialState.concepts.find((concept) => concept.scope === 'shared')?.id ?? ''))
   const [doneFlow, setDoneFlow] = useState<DoneFlowState | null>(null)
@@ -933,6 +972,11 @@ function App() {
   const categoryTagInputRef = useRef<HTMLInputElement | null>(null)
   const taskComposerTouchStartRef = useRef<number | null>(null)
   const sentenceTouchStartRef = useRef<{ x: number; y: number } | null>(null)
+
+  useEffect(() => {
+    if (!selectedUser) return
+    setPersonDraft(personDraftFromUserWithLocalName(selectedUser, localProfileName))
+  }, [selectedUser, localProfileName])
 
   const showTaskCadenceTeaser = debouncedTaskName.trim().length > 0
   const branchComplete =
@@ -2261,9 +2305,13 @@ function App() {
   function savePerson(asUpdate = false): void {
     if (!personDraft.name.trim()) return
 
+    const nextLocalName = personDraft.name.trim()
+    setStoredLocalProfileName(nextLocalName)
+    setLocalProfileName(nextLocalName)
+
     const nextUser = {
       id: asUpdate && selectedUser ? selectedUser.id : crypto.randomUUID(),
-      name: personDraft.name.trim(),
+      name: asUpdate && selectedUser ? selectedUser.name : nextLocalName,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       locale: 'en',
       weekStartsOn: personDraft.weekStartsOn as UserProfile['weekStartsOn'],
@@ -2338,7 +2386,7 @@ function App() {
 
   function loadCurrentPerspective(): void {
     if (!selectedUser) return
-    setPersonDraft(personDraftFromUser(selectedUser))
+    setPersonDraft(personDraftFromUserWithLocalName(selectedUser, localProfileName))
     showToast('Current perspective loaded into the editor.')
   }
 
@@ -2495,7 +2543,7 @@ function App() {
   }, [state.logs])
 
   const summary = feedCards.length
-    ? `${feedCards.length} tasks feel relevant for ${selectedUser?.name ?? 'right now'}`
+    ? `${feedCards.length} tasks feel relevant for ${selectedUserDisplayName}`
     : 'No task is asking loudly for attention right now.'
 
   if (connectionStatus === 'loading') {
@@ -3329,7 +3377,7 @@ function App() {
                   <div className="person-list">
                     {state.users.map((user) => (
                       <button key={user.id} className={user.id === state.selectedUserId ? 'person-chip active-person' : 'person-chip'} onClick={() => switchUser(user.id)}>
-                        {user.name}
+                        {user.id === state.selectedUserId ? localProfileName : user.name}
                       </button>
                     ))}
                   </div>
@@ -3402,11 +3450,16 @@ function App() {
                     <span className="metric-chip">status {connectionStatus}</span>
                     <span className="metric-chip">peers {peerCount}</span>
                     <span className="metric-chip">online {onlineUsers.length}</span>
+                    {hasSignalingProblem ? <span className="metric-chip" style={{ color: '#b91c1c' }}>signaling problem</span> : null}
                   </div>
                   {lastConnectionError && (
-                    <p className="subtle-text" style={{ color: '#b91c1c', marginTop: 8 }}>
-                      Connection issue: {lastConnectionError}
-                    </p>
+                    <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }}>
+                      <strong>Signaling server issue.</strong>
+                      <div style={{ marginTop: 4 }}>{lastConnectionError}</div>
+                      <div style={{ marginTop: 4, fontSize: '0.92rem' }}>
+                        Without a reachable signaling server, other browsers will not discover each other, even if the room code matches.
+                      </div>
+                    </div>
                   )}
                   <div className="concept-list" style={{ marginTop: 10 }}>
                     {onlineUsers.length > 0 ? onlineUsers.map((user) => (

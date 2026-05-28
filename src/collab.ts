@@ -17,7 +17,6 @@ export type OnlineUser = {
 
 type AwarenessUser = {
   sessionId: string
-  profileId: string
   name: string
 }
 
@@ -30,10 +29,8 @@ type CollabSession = {
 const DB_NAME = 'chores-garden'
 const STORE_NAME = 'roomState'
 const DB_VERSION = 1
-const DEFAULT_SIGNALING_SERVERS = [
-  'wss://y-webrtc-eu.fly.dev',
-]
 const SESSION_STORAGE_KEY = 'chores-session-id'
+const DEFAULT_SIGNALING_URLS = ['wss://garden-signal.azurewebsites.net']
 
 function getSessionId(): string {
   const existing = window.sessionStorage.getItem(SESSION_STORAGE_KEY)
@@ -59,6 +56,10 @@ export function gardenCodeFromRoomId(roomId: string): string {
 function shouldEnableRealtimeSync(): boolean {
   const params = new URLSearchParams(window.location.search)
   return params.get('sync') !== 'off'
+}
+
+function getSignalingUrls(): string[] | undefined {
+  return DEFAULT_SIGNALING_URLS
 }
 
 function cloneState(state: AppState): AppState {
@@ -150,7 +151,12 @@ export function buildShareUrl(roomId: string): string {
   return next.toString()
 }
 
-export function useCollaborativeState(initialState: AppState): {
+function normalizePresenceName(name: string): string {
+  const normalized = name.trim().replace(/\s+/g, ' ')
+  return normalized || 'Someone'
+}
+
+export function useCollaborativeState(initialState: AppState, localPresenceName: string): {
   state: AppState
   updateState: (updater: (previous: AppState) => AppState) => void
   peerCount: number
@@ -185,8 +191,9 @@ export function useCollaborativeState(initialState: AppState): {
     if (realtimeEnabled) {
       const doc = new Y.Doc()
       const root = doc.getMap('chores-root')
+      const signaling = getSignalingUrls()
       const provider = new WebrtcProvider(roomId, doc, {
-        signaling: DEFAULT_SIGNALING_SERVERS,
+        ...(signaling ? { signaling } : {}),
         maxConns: 8,
         filterBcConns: true,
       })
@@ -209,8 +216,7 @@ export function useCollaborativeState(initialState: AppState): {
     const syncOnlineUsers = () => {
       if (!active) return
       if (!collab) {
-        const localUser = stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)
-        setOnlineUsers(localUser ? [{ id: sessionIdRef.current, name: localUser.name, isSelf: true }] : [])
+        setOnlineUsers([{ id: sessionIdRef.current, name: normalizePresenceName(localPresenceName), isSelf: true }])
         setPeerCount(0)
         return
       }
@@ -235,10 +241,8 @@ export function useCollaborativeState(initialState: AppState): {
         })
       }
 
-      const localSelectedUser = stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)
-      if (localSelectedUser && !seenSessions.has(sessionIdRef.current)) {
-        const suffix = localSelectedUser.name.toLowerCase() === 'me' ? ` · ${sessionIdRef.current.slice(-4)}` : ''
-        users.unshift({ id: sessionIdRef.current, name: `${localSelectedUser.name}${suffix}`, isSelf: true })
+      if (!seenSessions.has(sessionIdRef.current)) {
+        users.unshift({ id: sessionIdRef.current, name: normalizePresenceName(localPresenceName), isSelf: true })
       }
 
       setOnlineUsers(users)
@@ -266,9 +270,10 @@ export function useCollaborativeState(initialState: AppState): {
         }
         const onDisconnect = (event: { error?: unknown }) => {
           if (!active) return
-          const message = event?.error instanceof Error
-            ? event.error.message
-            : `Could not reach signaling server: ${conn.url}`
+          const detail = event?.error instanceof Error ? event.error.message.trim() : ''
+          const message = detail
+            ? `Could not reach signaling server ${conn.url}: ${detail}`
+            : `Could not reach signaling server ${conn.url}. Peer discovery will not work until signaling is reachable.`
           setLastConnectionError(message)
         }
         conn.on('connect', onConnect)
@@ -315,8 +320,7 @@ export function useCollaborativeState(initialState: AppState): {
         attachSignalingListeners()
         collab.provider.awareness.setLocalStateField('user', {
           sessionId: sessionIdRef.current,
-          profileId: stateRef.current.selectedUserId,
-          name: stateRef.current.users.find((person) => person.id === stateRef.current.selectedUserId)?.name ?? 'Someone',
+          name: normalizePresenceName(localPresenceName),
         })
 
         const remoteState = collab.root.get('state') as AppState | undefined
@@ -363,6 +367,16 @@ export function useCollaborativeState(initialState: AppState): {
     }
   }, [initialState, realtimeEnabled, roomId])
 
+  useEffect(() => {
+    const collab = collabRef.current
+    if (collab) {
+      collab.provider.awareness.setLocalStateField('user', {
+        sessionId: sessionIdRef.current,
+        name: normalizePresenceName(localPresenceName),
+      })
+    }
+  }, [localPresenceName])
+
   const updateState = (updater: (previous: AppState) => AppState) => {
     const next = updater(cloneState(stateRef.current))
     const updatedAt = Date.now()
@@ -376,8 +390,7 @@ export function useCollaborativeState(initialState: AppState): {
     if (collab) {
       collab.provider.awareness.setLocalStateField('user', {
         sessionId: sessionIdRef.current,
-        profileId: next.selectedUserId,
-        name: next.users.find((person) => person.id === next.selectedUserId)?.name ?? 'Someone',
+        name: normalizePresenceName(localPresenceName),
       })
       collab.doc.transact(() => {
         collab.root.set('state', cloneState(next))

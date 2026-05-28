@@ -13,10 +13,12 @@ export type OnlineUser = {
   id: string
   name: string
   isSelf: boolean
+  instanceCount: number
 }
 
 type AwarenessUser = {
   sessionId: string
+  deviceId: string
   name: string
 }
 
@@ -30,6 +32,7 @@ const DB_NAME = 'chores-garden'
 const STORE_NAME = 'roomState'
 const DB_VERSION = 1
 const SESSION_STORAGE_KEY = 'chores-session-id'
+const DEVICE_STORAGE_KEY = 'chores-device-id'
 const DEFAULT_SIGNALING_URLS = ['wss://garden-signal.azurewebsites.net']
 
 function getSessionId(): string {
@@ -37,6 +40,14 @@ function getSessionId(): string {
   if (existing) return existing
   const created = `session-${Math.random().toString(36).slice(2, 10)}`
   window.sessionStorage.setItem(SESSION_STORAGE_KEY, created)
+  return created
+}
+
+function getDeviceId(): string {
+  const existing = window.localStorage.getItem(DEVICE_STORAGE_KEY)
+  if (existing) return existing
+  const created = `device-${Math.random().toString(36).slice(2, 10)}`
+  window.localStorage.setItem(DEVICE_STORAGE_KEY, created)
   return created
 }
 
@@ -177,6 +188,7 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
   const updatedAtRef = useRef(0)
   const bootstrappedRef = useRef(false)
   const sessionIdRef = useRef(getSessionId())
+  const deviceIdRef = useRef(getDeviceId())
   const collabRef = useRef<CollabSession | null>(null)
 
   useEffect(() => {
@@ -216,34 +228,51 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
     const syncOnlineUsers = () => {
       if (!active) return
       if (!collab) {
-        setOnlineUsers([{ id: sessionIdRef.current, name: normalizePresenceName(localPresenceName), isSelf: true }])
+        setOnlineUsers([{ id: deviceIdRef.current, name: normalizePresenceName(localPresenceName), isSelf: true, instanceCount: 1 }])
         setPeerCount(0)
         return
       }
 
-      const selfClientId = collab.provider.awareness.clientID
       const entries = Array.from(collab.provider.awareness.getStates().entries())
-      const seenSessions = new Set<string>()
-      const users: OnlineUser[] = []
+      const grouped = new Map<string, OnlineUser>()
 
       for (const [clientId, awarenessState] of entries) {
         const awarenessUser = awarenessState?.user as Partial<AwarenessUser> | undefined
         const sessionId = awarenessUser?.sessionId ?? `client-${clientId}`
-        if (seenSessions.has(sessionId)) continue
-        seenSessions.add(sessionId)
-
+        const deviceId = awarenessUser?.deviceId ?? sessionId
         const baseName = awarenessUser?.name?.trim() || 'Someone'
+        const isSelf = deviceId === deviceIdRef.current
+        const existing = grouped.get(deviceId)
+
+        if (existing) {
+          existing.instanceCount += 1
+          if (isSelf) existing.isSelf = true
+          continue
+        }
+
         const suffix = baseName.toLowerCase() === 'me' ? ` · ${sessionId.slice(-4)}` : ''
-        users.push({
-          id: sessionId,
+        grouped.set(deviceId, {
+          id: deviceId,
           name: `${baseName}${suffix}`,
-          isSelf: clientId === selfClientId,
+          isSelf,
+          instanceCount: 1,
         })
       }
 
-      if (!seenSessions.has(sessionIdRef.current)) {
-        users.unshift({ id: sessionIdRef.current, name: normalizePresenceName(localPresenceName), isSelf: true })
+      if (!grouped.has(deviceIdRef.current)) {
+        grouped.set(deviceIdRef.current, {
+          id: deviceIdRef.current,
+          name: normalizePresenceName(localPresenceName),
+          isSelf: true,
+          instanceCount: 1,
+        })
       }
+
+      const users = Array.from(grouped.values()).sort((left, right) => {
+        if (left.isSelf && !right.isSelf) return -1
+        if (!left.isSelf && right.isSelf) return 1
+        return left.name.localeCompare(right.name)
+      })
 
       setOnlineUsers(users)
       setPeerCount(Math.max(0, users.filter((user) => !user.isSelf).length))
@@ -320,6 +349,7 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
         attachSignalingListeners()
         collab.provider.awareness.setLocalStateField('user', {
           sessionId: sessionIdRef.current,
+          deviceId: deviceIdRef.current,
           name: normalizePresenceName(localPresenceName),
         })
 
@@ -372,6 +402,7 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
     if (collab) {
       collab.provider.awareness.setLocalStateField('user', {
         sessionId: sessionIdRef.current,
+        deviceId: deviceIdRef.current,
         name: normalizePresenceName(localPresenceName),
       })
     }
@@ -390,6 +421,7 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
     if (collab) {
       collab.provider.awareness.setLocalStateField('user', {
         sessionId: sessionIdRef.current,
+        deviceId: deviceIdRef.current,
         name: normalizePresenceName(localPresenceName),
       })
       collab.doc.transact(() => {

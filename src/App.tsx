@@ -3452,6 +3452,11 @@ function App() {
                     <span className="metric-chip">online {onlineUsers.length}</span>
                     {hasSignalingProblem ? <span className="metric-chip" style={{ color: '#b91c1c' }}>signaling problem</span> : null}
                   </div>
+                  {onlineUsers.some((user) => user.isSelf && user.instanceCount > 1) ? (
+                    <p className="subtle-text" style={{ marginTop: 8 }}>
+                      Multiple tabs or windows on this device are grouped together to keep presence quieter.
+                    </p>
+                  ) : null}
                   {lastConnectionError && (
                     <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }}>
                       <strong>Signaling server issue.</strong>
@@ -3466,7 +3471,10 @@ function App() {
                       <div key={user.id} className="concept-card" style={{ padding: '8px 10px' }}>
                         <div className="task-head">
                           <strong>{user.name}</strong>
-                          <span className="metric-chip">{user.isSelf ? 'you' : 'online'}</span>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                            {user.instanceCount > 1 ? <span className="metric-chip">{user.instanceCount} tabs</span> : null}
+                            <span className="metric-chip">{user.isSelf ? 'you' : 'online'}</span>
+                          </div>
                         </div>
                       </div>
                     )) : (

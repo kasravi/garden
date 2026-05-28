@@ -15,7 +15,7 @@ const DB_VERSION = 1
 
 function shouldEnableRealtimeSync(): boolean {
   const params = new URLSearchParams(window.location.search)
-  return params.get('sync') === 'webrtc'
+  return params.get('sync') !== 'off'
 }
 
 function cloneState(state: AppState): AppState {
@@ -96,11 +96,7 @@ export function getRoomId(): string {
 export function buildShareUrl(roomId: string): string {
   const next = new URL(window.location.href)
   next.searchParams.set('room', roomId)
-  if (shouldEnableRealtimeSync()) {
-    next.searchParams.set('sync', 'webrtc')
-  } else {
-    next.searchParams.delete('sync')
-  }
+  next.searchParams.set('sync', 'webrtc')
   return next.toString()
 }
 

@@ -98,6 +98,7 @@ export function createInitialState(roomId: string): AppState {
     sharedRules: defaultSharedRules,
     userRules: buildAdoptedRules(),
     logs: [],
+    archives: [],
     selectedUserId: defaultUser.id
   }
 }

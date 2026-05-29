@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { WebrtcProvider } from 'y-webrtc'
 import * as Y from 'yjs'
+import { archiveStateRemovals, normalizeState } from './archive'
 import type { AppState } from './types'
 
 type PersistedRoomState = {
@@ -74,7 +75,7 @@ function getSignalingUrls(): string[] | undefined {
 }
 
 function cloneState(state: AppState): AppState {
-  return JSON.parse(JSON.stringify(state)) as AppState
+  return normalizeState(JSON.parse(JSON.stringify(state)) as AppState)
 }
 
 function openPersistenceDb(): Promise<IDBDatabase> {
@@ -216,7 +217,8 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
     }
 
     const applyState = (nextState: AppState, updatedAt: number) => {
-      const cloned = cloneState(nextState)
+      const archived = archiveStateRemovals(stateRef.current, normalizeState(nextState), 'sync-removed', 'remote')
+      const cloned = cloneState(archived)
       stateRef.current = cloned
       updatedAtRef.current = updatedAt
       setState(cloned)
@@ -325,9 +327,9 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
         if (!active) return
 
         if (persisted?.state) {
-          stateRef.current = cloneState(persisted.state)
+          stateRef.current = cloneState(normalizeState(persisted.state))
           updatedAtRef.current = persisted.updatedAt
-          setState(cloneState(persisted.state))
+          setState(cloneState(normalizeState(persisted.state)))
         } else {
           updatedAtRef.current = Date.now()
           stateRef.current = cloneState(initialState)
@@ -356,7 +358,7 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
         const remoteState = collab.root.get('state') as AppState | undefined
         const remoteUpdatedAt = Number(collab.root.get('updatedAt') ?? 0)
         if (remoteState && remoteUpdatedAt > updatedAtRef.current) {
-          applyState(remoteState, remoteUpdatedAt)
+          applyState(normalizeState(remoteState), remoteUpdatedAt)
         } else {
           collab.doc.transact(() => {
             collab.root.set('state', cloneState(stateRef.current))
@@ -409,7 +411,8 @@ export function useCollaborativeState(initialState: AppState, localPresenceName:
   }, [localPresenceName])
 
   const updateState = (updater: (previous: AppState) => AppState) => {
-    const next = updater(cloneState(stateRef.current))
+    const proposed = normalizeState(updater(cloneState(stateRef.current)))
+    const next = archiveStateRemovals(stateRef.current, proposed, 'deleted', 'local')
     const updatedAt = Date.now()
     stateRef.current = next
     updatedAtRef.current = updatedAt

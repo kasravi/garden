@@ -258,6 +258,32 @@ export interface TaskLogEntry {
   note?: string
 }
 
+export type ArchiveEntityType =
+  | 'concept'
+  | 'user'
+  | 'userConceptDefinition'
+  | 'task'
+  | 'userTaskProfile'
+  | 'category'
+  | 'sharedTaskCategory'
+  | 'userTaskCategory'
+  | 'sharedRule'
+  | 'userRule'
+  | 'log'
+
+export type ArchiveReason = 'deleted' | 'sync-removed'
+
+export interface ArchiveEntry {
+  id: string
+  entityType: ArchiveEntityType
+  entityId: string
+  archivedAt: IsoDateTime
+  reason: ArchiveReason
+  source: 'local' | 'remote'
+  summary: string
+  snapshot: unknown
+}
+
 export interface SpaceMeta {
   title: string
   roomId: string
@@ -276,6 +302,7 @@ export interface AppState {
   sharedRules: SharedRuleDefinition[]
   userRules: UserRule[]
   logs: TaskLogEntry[]
+  archives: ArchiveEntry[]
   selectedUserId: UserId
 }
 

@@ -6,19 +6,25 @@ import { createInitialState } from './seed'
 import { SentenceSpinner } from './components/SentenceSpinner'
 import type {
   AppState,
+  ArchiveEntry,
   CadenceUnit,
   CategoryDefinition,
   CommonConcept,
   DayGroup,
   ExpressionNode,
   SharedRuleDefinition,
+  SharedTaskCategoryAssignment,
   TaskAction,
+  TaskDefinition,
+  TaskLogEntry,
   UserProfile,
   UserRule,
+  UserTaskCategoryAssignment,
+  UserTaskProfile,
   WorkMode,
 } from './types'
 
-type MenuSection = 'analytics' | 'sharing' | 'language' | 'heuristics' | 'settings'
+type MenuSection = 'analytics' | 'sharing' | 'language' | 'heuristics' | 'archives' | 'settings'
 type ScalarField = 'importance' | 'grandness' | 'subjectiveTime' | 'focus'
 type SkipScope = 'today-only' | 'special-task' | 'sort-of-task'
 type TaskComposerOptionalPath = 'details' | 'categories' | 'context' | null
@@ -735,6 +741,70 @@ function labelForConceptIds(state: AppState, ids: string[]): string {
 
 function sentenceTitle(actionText: string): string {
   return capitalize(actionText || 'Untitled task')
+}
+
+function archiveEntityLabel(entry: ArchiveEntry): string {
+  switch (entry.entityType) {
+    case 'task':
+      return 'Task'
+    case 'category':
+      return 'Category'
+    case 'concept':
+      return 'Concept'
+    case 'user':
+      return 'Profile'
+    case 'userTaskProfile':
+      return 'Task profile'
+    case 'userConceptDefinition':
+      return 'Personal concept'
+    case 'sharedTaskCategory':
+      return 'Shared category link'
+    case 'userTaskCategory':
+      return 'Personal category link'
+    case 'sharedRule':
+      return 'Shared rule'
+    case 'userRule':
+      return 'Rule'
+    case 'log':
+      return 'Log'
+    default:
+      return 'Item'
+  }
+}
+
+function archiveSnapshotPreview(entry: ArchiveEntry): string {
+  const snapshot = entry.snapshot as Record<string, unknown> | null
+  if (!snapshot || typeof snapshot !== 'object') return 'Snapshot saved.'
+  if (typeof snapshot.definition === 'string' && snapshot.definition.trim()) return snapshot.definition.trim()
+  if (typeof snapshot.description === 'string' && snapshot.description.trim()) return snapshot.description.trim()
+  if (typeof snapshot.notes === 'string' && snapshot.notes.trim()) return snapshot.notes.trim()
+  if (typeof snapshot.note === 'string' && snapshot.note.trim()) return snapshot.note.trim()
+  if (typeof snapshot.label === 'string' && snapshot.label.trim() && snapshot.label !== entry.summary) return snapshot.label.trim()
+  if (typeof snapshot.action === 'string') return `Action: ${snapshot.action}`
+  return 'Snapshot saved.'
+}
+
+function archiveEntryTaskId(entry: ArchiveEntry): string | null {
+  const snapshot = entry.snapshot as Record<string, unknown> | null
+  if (entry.entityType === 'task') {
+    return typeof snapshot?.id === 'string' ? snapshot.id : entry.entityId
+  }
+  if (snapshot && typeof snapshot.taskId === 'string') {
+    return snapshot.taskId
+  }
+  return null
+}
+
+function archiveRelatedSummary(entries: ArchiveEntry[]): string {
+  if (entries.length === 0) return ''
+  const counts = new Map<string, number>()
+  for (const entry of entries) {
+    const label = archiveEntityLabel(entry)
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .map(([label, count]) => `${count} ${label}${count > 1 ? 's' : ''}`)
+    .join(' · ')
 }
 
 function capacitySummary(state: AppState['users'][number] | undefined): string {
@@ -1796,6 +1866,76 @@ function App() {
       setToast(null)
       toastTimeoutRef.current = null
     }, options?.duration ?? 3600)
+  }
+
+  function clearArchiveEntry(entryId: string): void {
+    updateState((previous) => ({
+      ...previous,
+      archives: previous.archives.filter((entry) => entry.id !== entryId),
+    }))
+    showToast('Archive item removed.')
+  }
+
+  function clearArchiveTaskGroup(taskId: string): void {
+    updateState((previous) => ({
+      ...previous,
+      archives: previous.archives.filter((entry) => archiveEntryTaskId(entry) !== taskId),
+    }))
+    showToast('Archived task removed.')
+  }
+
+  function recoverArchivedTask(taskId: string): void {
+    const relatedEntries = state.archives.filter((entry) => archiveEntryTaskId(entry) === taskId)
+    const taskEntry = relatedEntries.find((entry) => entry.entityType === 'task')
+    if (!taskEntry) return
+
+    const taskSnapshot = taskEntry.snapshot as TaskDefinition
+    const profileSnapshots = relatedEntries
+      .filter((entry) => entry.entityType === 'userTaskProfile')
+      .map((entry) => entry.snapshot as UserTaskProfile)
+    const sharedCategorySnapshots = relatedEntries
+      .filter((entry) => entry.entityType === 'sharedTaskCategory')
+      .map((entry) => entry.snapshot as SharedTaskCategoryAssignment)
+    const userCategorySnapshots = relatedEntries
+      .filter((entry) => entry.entityType === 'userTaskCategory')
+      .map((entry) => entry.snapshot as UserTaskCategoryAssignment)
+    const logSnapshots = relatedEntries
+      .filter((entry) => entry.entityType === 'log')
+      .map((entry) => entry.snapshot as TaskLogEntry)
+
+    updateState((previous) => ({
+      ...previous,
+      tasks: previous.tasks.some((task) => task.id === taskSnapshot.id) ? previous.tasks : [...previous.tasks, taskSnapshot],
+      userTaskProfiles: [
+        ...previous.userTaskProfiles,
+        ...profileSnapshots.filter((profile) => !previous.userTaskProfiles.some((entry) => entry.id === profile.id)),
+      ],
+      sharedTaskCategories: [
+        ...previous.sharedTaskCategories,
+        ...sharedCategorySnapshots.filter((assignment) => !previous.sharedTaskCategories.some((entry) => entry.id === assignment.id)),
+      ],
+      userTaskCategories: [
+        ...previous.userTaskCategories,
+        ...userCategorySnapshots.filter((assignment) => !previous.userTaskCategories.some((entry) => entry.id === assignment.id)),
+      ],
+      logs: [
+        ...previous.logs,
+        ...logSnapshots.filter((log) => !previous.logs.some((entry) => entry.id === log.id)),
+      ],
+      archives: previous.archives.filter((entry) => archiveEntryTaskId(entry) !== taskId),
+    }))
+    showToast('Task recovered from archive.')
+  }
+
+  function clearAllArchives(): void {
+    if (state.archives.length === 0) return
+    const confirmed = window.confirm('Clear the entire archive? This permanently removes all archived snapshots.')
+    if (!confirmed) return
+    updateState((previous) => ({
+      ...previous,
+      archives: [],
+    }))
+    showToast('Archive cleared.')
   }
 
   useEffect(() => () => {
@@ -3367,6 +3507,37 @@ function App() {
     return state.logs.filter((log) => log.action === 'done' && log.createdAt >= todayIso).length
   }, [state.logs])
 
+  const archiveTaskGroups = useMemo(() => {
+    const grouped = new Map<string, ArchiveEntry[]>()
+    for (const entry of state.archives) {
+      const taskId = archiveEntryTaskId(entry)
+      if (!taskId) continue
+      const current = grouped.get(taskId) ?? []
+      current.push(entry)
+      grouped.set(taskId, current)
+    }
+
+    return Array.from(grouped.entries())
+      .map(([taskId, entries]) => {
+        const sortedEntries = [...entries].sort((left, right) => new Date(right.archivedAt).getTime() - new Date(left.archivedAt).getTime())
+        const taskEntry = sortedEntries.find((entry) => entry.entityType === 'task') ?? sortedEntries[0]
+        const relatedEntries = sortedEntries.filter((entry) => entry.id !== taskEntry.id)
+        return { taskEntry, taskId, relatedEntries }
+      })
+      .sort((left, right) => new Date(right.taskEntry.archivedAt).getTime() - new Date(left.taskEntry.archivedAt).getTime())
+  }, [state.archives])
+
+  const standaloneArchiveEntries = useMemo(() => {
+    const bundledIds = new Set<string>()
+    archiveTaskGroups.forEach(({ taskEntry, relatedEntries }) => {
+      bundledIds.add(taskEntry.id)
+      relatedEntries.forEach((entry) => bundledIds.add(entry.id))
+    })
+    return state.archives.filter((entry) => !bundledIds.has(entry.id))
+  }, [archiveTaskGroups, state.archives])
+
+  const archiveVisibleCount = archiveTaskGroups.length + standaloneArchiveEntries.length
+
   const summary = feedCards.length
     ? `${feedCards.length} tasks feel relevant for ${selectedUserDisplayName}`
     : 'No task is asking loudly for attention right now.'
@@ -4226,6 +4397,7 @@ function App() {
               <button className={menuSection === 'sharing' ? 'tab active-tab' : 'tab'} onClick={() => setMenuSection('sharing')}>Profile</button>
               <button className={menuSection === 'language' ? 'tab active-tab' : 'tab'} onClick={() => setMenuSection('language')}>Vocabulary</button>
               <button className={menuSection === 'heuristics' ? 'tab active-tab' : 'tab'} onClick={() => setMenuSection('heuristics')}>Heuristics</button>
+              <button className={menuSection === 'archives' ? 'tab active-tab' : 'tab'} onClick={() => setMenuSection('archives')}>Archives</button>
               <button className={menuSection === 'settings' ? 'tab active-tab' : 'tab'} onClick={() => setMenuSection('settings')}>Settings</button>
             </div>
 
@@ -4828,6 +5000,72 @@ function App() {
                     taskSelect.value = ''
                     conceptSelect.value = ''
                   }}>Add heuristic</button>
+                </article>
+              </section>
+            )}
+
+            {menuSection === 'archives' && (
+              <section className="panel-section">
+                <article className="soft-card">
+                  <div className="section-head">
+                    <div>
+                      <h3>Archives</h3>
+                      <p className="subtle-text">Anything that disappears from state is copied here first, including sync-related removals.</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <span className="metric-chip">{archiveVisibleCount} items</span>
+                      {state.archives.length > 0 && (
+                        <button className="secondary-btn danger-btn" onClick={clearAllArchives}>Clear all</button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="concept-list" style={{ marginTop: 10 }}>
+                    {archiveVisibleCount > 0 ? (
+                      <>
+                        {archiveTaskGroups.map(({ taskEntry, taskId, relatedEntries }) => (
+                          <article key={taskEntry.id} className="concept-card">
+                            <div className="task-head">
+                              <div>
+                                <strong>{taskEntry.summary}</strong>
+                                <p className="subtle-text" style={{ marginTop: 4 }}>{archiveEntityLabel(taskEntry)} · {taskEntry.reason === 'sync-removed' ? 'removed during sync' : 'deleted locally'}</p>
+                              </div>
+                              <span className="metric-chip">{timeAgo(taskEntry.archivedAt)}</span>
+                            </div>
+                            <p className="context-line">{archiveSnapshotPreview(taskEntry)}</p>
+                            {relatedEntries.length > 0 && (
+                              <p className="subtle-text" style={{ marginTop: 6 }}>Also saved: {archiveRelatedSummary(relatedEntries)}</p>
+                            )}
+                            <div className="section-head" style={{ marginTop: 8 }}>
+                              <p className="subtle-text">source {taskEntry.source} · task id {taskId}</p>
+                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                <button className="primary-btn" onClick={() => recoverArchivedTask(taskId)}>Recover</button>
+                                <button className="secondary-btn danger-btn" onClick={() => clearArchiveTaskGroup(taskId)}>Remove</button>
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+
+                        {standaloneArchiveEntries.map((entry) => (
+                          <article key={entry.id} className="concept-card">
+                            <div className="task-head">
+                              <div>
+                                <strong>{entry.summary}</strong>
+                                <p className="subtle-text" style={{ marginTop: 4 }}>{archiveEntityLabel(entry)} · {entry.reason === 'sync-removed' ? 'removed during sync' : 'deleted locally'}</p>
+                              </div>
+                              <span className="metric-chip">{timeAgo(entry.archivedAt)}</span>
+                            </div>
+                            <p className="context-line">{archiveSnapshotPreview(entry)}</p>
+                            <div className="section-head" style={{ marginTop: 8 }}>
+                              <p className="subtle-text">source {entry.source} · id {entry.entityId}</p>
+                              <button className="secondary-btn danger-btn" onClick={() => clearArchiveEntry(entry.id)}>Remove</button>
+                            </div>
+                          </article>
+                        ))}
+                      </>
+                    ) : (
+                      <p className="subtle-text">Nothing archived yet.</p>
+                    )}
+                  </div>
                 </article>
               </section>
             )}

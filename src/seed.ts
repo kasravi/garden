@@ -84,7 +84,7 @@ function buildAdoptedRules(): UserRule[] {
 export function createInitialState(roomId: string): AppState {
   return {
     space: {
-      title: 'Chores Garden',
+      title: 'Garden',
       roomId
     },
     concepts: DEFAULT_COMMON_CONCEPTS,

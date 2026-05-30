@@ -1,6 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Fern emoji icon">
   <rect width="512" height="512" rx="128" fill="#0f172a" />
-  <path d="M146 318c0-74 50-142 126-142 56 0 94 34 94 88 0 46-30 84-80 105-29 12-61 17-100 17H146v-68Z" fill="#34d399" />
-  <path d="M196 139c44 9 79 31 106 68 18 26 27 52 27 79-26-32-57-55-95-69-27-10-55-14-84-12 11-28 27-50 46-66Z" fill="#f8fafc" opacity="0.92" />
-  <circle cx="357" cy="157" r="34" fill="#f59e0b" />
+  <text x="256" y="302" font-size="256" text-anchor="middle" dominant-baseline="middle">🌿</text>
 </svg>

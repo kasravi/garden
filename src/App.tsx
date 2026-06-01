@@ -1071,6 +1071,9 @@ function App() {
   const [adjustContextSuggestionIndex, setAdjustContextSuggestionIndex] = useState(0)
   const [analyticsPlotRange, setAnalyticsPlotRange] = useState<'month' | 'all'>('month')
   const [analyticsFilter, setAnalyticsFilter] = useState('')
+  const [heuristicTarget, setHeuristicTarget] = useState('')
+  const [heuristicConceptId, setHeuristicConceptId] = useState('')
+  const [heuristicQualifier, setHeuristicQualifier] = useState('during')
   const [vocabFilter, setVocabFilter] = useState('')
   const [vocabEditId, setVocabEditId] = useState<string | null>(null)
   const [vocabEditMode, setVocabEditMode] = useState<'objective' | 'subjective'>('objective')
@@ -1136,6 +1139,14 @@ function App() {
     () => state.categories.map((category) => String(category.label)).filter((label, index, labels) => labels.indexOf(label) === index),
     [state.categories],
   )
+  const heuristicConcept = useMemo(
+    () => (heuristicConceptId ? sharedConcepts.find((concept) => concept.id === heuristicConceptId) ?? null : null),
+    [heuristicConceptId, sharedConcepts],
+  )
+  const heuristicQualifiers = useMemo(
+    () => (heuristicConcept ? conceptSpecifiers(heuristicConcept) : ['during']),
+    [heuristicConcept],
+  )
   const existingCategoryTags = useMemo<string[]>(() => {
     const tags = existingCategoryLabels
       .map((label) => normalizeTagLabel(label))
@@ -1175,6 +1186,12 @@ function App() {
     () => getSimilarTasks(state.tasks, taskDraft.actionText),
     [state.tasks, taskDraft.actionText],
   )
+
+  useEffect(() => {
+    if (!heuristicQualifiers.includes(heuristicQualifier)) {
+      setHeuristicQualifier(heuristicQualifiers[0] ?? 'during')
+    }
+  }, [heuristicQualifier, heuristicQualifiers])
   const skipCategoryOptions = useMemo(() => {
     if (!skipFlow) {
       return [] as Array<{ id: string; label: string }>
@@ -4671,7 +4688,7 @@ function App() {
                   <h3>Add heuristic</h3>
                   <p className="subtle-text">I prefer doing a task</p>
                   <div className="form-grid compact-grid">
-                    <select className="text-input" id="heuristic-task-select">
+                    <select className="text-input" value={heuristicTarget} onChange={(event) => setHeuristicTarget(event.target.value)}>
                       <option value="">Select task or category...</option>
                       <optgroup label="Tasks">
                         {state.tasks.map((task) => <option key={task.id} value={`task:${task.id}`}>{task.title}</option>)}
@@ -4681,32 +4698,51 @@ function App() {
                       </optgroup>
                     </select>
                     <div className="heuristic-qualifier-row">
-                      <select className="text-input" id="heuristic-qualifier-select" style={{ flex: '0 0 auto', width: 'auto' }}>
-                        {TIMEFRAME_QUALIFIER_OPTIONS.filter((o) => o.id !== 'none').map((o) => (
-                          <option key={o.id} value={o.id}>{o.label}</option>
+                      <select
+                        className="text-input"
+                        value={heuristicQualifier}
+                        onChange={(event) => setHeuristicQualifier(event.target.value)}
+                        style={{ flex: '0 0 auto', width: 'auto' }}
+                      >
+                        {heuristicQualifiers.map((qualifier) => (
+                          <option key={qualifier} value={qualifier}>{qualifier}</option>
                         ))}
                       </select>
-                      <select className="text-input" id="heuristic-concept-select" style={{ flex: 1 }}>
+                      <select
+                        className="text-input"
+                        value={heuristicConceptId}
+                        onChange={(event) => {
+                          const nextConceptId = event.target.value
+                          setHeuristicConceptId(nextConceptId)
+                          const nextConcept = sharedConcepts.find((concept) => concept.id === nextConceptId)
+                          setHeuristicQualifier(nextConcept ? (conceptSpecifiers(nextConcept)[0] ?? 'during') : 'during')
+                        }}
+                        style={{ flex: 1 }}
+                      >
                         <option value="">Select context...</option>
                         {sharedConcepts.map((concept) => <option key={concept.id} value={concept.id}>{concept.label}</option>)}
                       </select>
                     </div>
                   </div>
                   <button className="primary-btn" style={{ marginTop: 8 }} onClick={() => {
-                    const taskSelect = document.getElementById('heuristic-task-select') as HTMLSelectElement
-                    const qualifierSelect = document.getElementById('heuristic-qualifier-select') as HTMLSelectElement
-                    const conceptSelect = document.getElementById('heuristic-concept-select') as HTMLSelectElement
-                    const target = taskSelect?.value
-                    const conceptId = conceptSelect?.value
-                    const qualifier = qualifierSelect?.value || 'during'
+                    const target = heuristicTarget
+                    const conceptId = heuristicConceptId
+                    const qualifier = heuristicQualifier || 'during'
                     if (!target || !conceptId) { showToast('Select both a task/category and a context.'); return }
-                    // Note: qualifier is stored conceptually — the system uses the concept link
                     if (target.startsWith('task:')) {
                       const taskId = target.replace('task:', '')
                       updateState((prev) => ({
                         ...prev,
                         tasks: prev.tasks.map((t) => t.id === taskId
-                          ? { ...t, sharedConceptIds: [...new Set([...t.sharedConceptIds, conceptId])] }
+                          ? {
+                              ...t,
+                              sharedConceptIds: [...new Set([...t.sharedConceptIds, conceptId])],
+                              sharedContextLinks: [
+                                ...(t.sharedContextLinks ?? []),
+                              ].some((link) => link.conceptId === conceptId && link.qualifier === qualifier)
+                                ? t.sharedContextLinks
+                                : [...(t.sharedContextLinks ?? []), { conceptId, qualifier }],
+                            }
                           : t),
                       }))
                     } else if (target.startsWith('cat:')) {
@@ -4718,13 +4754,22 @@ function App() {
                       updateState((prev) => ({
                         ...prev,
                         tasks: prev.tasks.map((t) => tasksInCategory.includes(t.id)
-                          ? { ...t, sharedConceptIds: [...new Set([...t.sharedConceptIds, conceptId])] }
+                          ? {
+                              ...t,
+                              sharedConceptIds: [...new Set([...t.sharedConceptIds, conceptId])],
+                              sharedContextLinks: [
+                                ...(t.sharedContextLinks ?? []),
+                              ].some((link) => link.conceptId === conceptId && link.qualifier === qualifier)
+                                ? t.sharedContextLinks
+                                : [...(t.sharedContextLinks ?? []), { conceptId, qualifier }],
+                            }
                           : t),
                       }))
                     }
                     showToast(`Heuristic added: ${qualifier} ${sharedConcepts.find((c) => c.id === conceptId)?.label ?? 'context'}`)
-                    taskSelect.value = ''
-                    conceptSelect.value = ''
+                    setHeuristicTarget('')
+                    setHeuristicConceptId('')
+                    setHeuristicQualifier('during')
                   }}>Add heuristic</button>
                 </article>
               </section>

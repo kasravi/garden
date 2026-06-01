@@ -15,6 +15,7 @@ import type {
   UserTaskCategoryAssignment,
   UserTaskProfile,
 } from './types'
+import { DEFAULT_COMMON_CONCEPTS } from './ontology'
 
 type CollectionKey =
   | 'concepts'
@@ -55,6 +56,25 @@ const COLLECTION_TYPES: Array<{ key: CollectionKey; entityType: ArchiveEntityTyp
   { key: 'userRules', entityType: 'userRule' },
   { key: 'logs', entityType: 'log' },
 ]
+
+const LEGACY_CONCEPT_ID_REMAP: Record<string, string> = {
+  'time-workday': 'context-work-time',
+  'time-evening-reset': 'context-evening',
+  'spring-season': 'context-spring',
+  'spring-break': 'context-holidays',
+  'summer-holidays': 'context-summer',
+  'new-year-season': 'context-holidays',
+  'christmas-holidays': 'context-holidays',
+  'season-warm-months': 'context-warmer-time-of-year',
+  'weekend-morning': 'context-weekend',
+  'mood-good-enough': 'context-mood',
+  'energy-light-effort': 'context-energy',
+  'life-home-care': 'context-at-home',
+  'social-shared-space': 'context-at-home',
+}
+
+const LEGACY_CONCEPT_IDS = new Set(Object.keys(LEGACY_CONCEPT_ID_REMAP))
+const DEFAULT_CONCEPT_BY_ID = new Map(DEFAULT_COMMON_CONCEPTS.map((concept) => [concept.id, concept]))
 
 function archiveSummary(entityType: ArchiveEntityType, entity: ArchivableEntity): string {
   switch (entityType) {
@@ -108,8 +128,35 @@ function normalizeArchives(entries: ArchiveEntry[]): ArchiveEntry[] {
 }
 
 export function normalizeState(state: AppState): AppState {
+  const concepts = Array.isArray(state.concepts) ? state.concepts : []
+  const shouldMigrateLegacyConcepts = concepts.some((concept) => LEGACY_CONCEPT_IDS.has(concept.id))
+
+  const migratedConcepts = [
+    ...concepts.filter((concept) => !LEGACY_CONCEPT_IDS.has(concept.id) && !DEFAULT_CONCEPT_BY_ID.has(concept.id)),
+    ...DEFAULT_COMMON_CONCEPTS,
+  ]
+
+  const remapConceptId = (conceptId: string): string => LEGACY_CONCEPT_ID_REMAP[conceptId] ?? conceptId
+
   return {
     ...state,
+    concepts: migratedConcepts,
+    userConceptDefinitions: shouldMigrateLegacyConcepts
+      ? state.userConceptDefinitions.map((definition) => ({
+          ...definition,
+          conceptId: remapConceptId(definition.conceptId),
+        }))
+      : state.userConceptDefinitions,
+    tasks: shouldMigrateLegacyConcepts
+      ? state.tasks.map((task) => ({
+          ...task,
+          sharedConceptIds: (task.sharedConceptIds ?? []).map(remapConceptId),
+          sharedContextLinks: task.sharedContextLinks?.map((link) => ({
+            ...link,
+            conceptId: remapConceptId(link.conceptId),
+          })),
+        }))
+      : state.tasks,
     archives: normalizeArchives(Array.isArray(state.archives) ? state.archives : []),
   }
 }

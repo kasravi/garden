@@ -46,10 +46,11 @@ import {
   type WindowPresetOption,
 } from './app-config'
 import { formatCadence, getFeedCards, getWishHealth, MOOD_EMOJIS, timeAgo, toneLabel } from './engine'
-import { CONCEPT_KIND_LABELS } from './ontology'
+import { CONCEPT_KIND_LABELS } from './ontology.ts'
 import { getRoomId, roomIdFromGardenCode, useCollaborativeState } from './collab.ts'
 import { createInitialState } from './seed'
 import { SentenceSpinner } from './components/SentenceSpinner'
+import { getSimilarTasks } from './task-similarity'
 import type {
   AppState,
   ArchiveEntry,
@@ -76,7 +77,9 @@ type TaskComposerOptionalPath = 'details' | 'categories' | 'context' | null
 type TaskComposerStepId = 'name' | 'cadence' | 'importance' | 'grandness' | 'time' | 'focus' | 'timing' | 'window' | 'review'
 type TaskComposerUiStepId = 'name' | 'mode' | 'frequency-starter' | 'frequency-count' | 'count' | 'timeframe' | 'timeframe-qualifier' | 'details' | 'importance' | 'difficulty' | 'time' | 'focus' | 'timing' | 'window' | 'category' | 'context'
 type TaskAdjustmentUiStepId = 'summary' | 'title' | 'mode' | 'frequency-starter' | 'frequency-count' | 'count' | 'timeframe' | 'timeframe-qualifier' | 'importance' | 'difficulty' | 'time' | 'focus' | 'category' | 'context' | 'notes'
+type TaskAdjustmentBranch = 'title' | 'cadence' | 'details' | 'category' | 'context' | 'notes' | null
 const ADJUSTMENT_DESCRIPTION_STEPS: TaskAdjustmentUiStepId[] = ['title', 'mode', 'frequency-starter', 'frequency-count', 'count', 'timeframe', 'timeframe-qualifier']
+const ADJUSTMENT_CADENCE_STEPS: TaskAdjustmentUiStepId[] = ['mode', 'frequency-starter', 'frequency-count', 'count', 'timeframe', 'timeframe-qualifier']
 const ADJUSTMENT_DETAIL_STEPS: TaskAdjustmentUiStepId[] = ['importance', 'difficulty', 'time', 'focus']
 
 interface TaskAdjustmentState {
@@ -404,6 +407,10 @@ function sentenceTitle(actionText: string): string {
   return capitalize(actionText || 'Untitled task')
 }
 
+function normalizePersonName(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
 function archiveEntityLabel(entry: ArchiveEntry): string {
   switch (entry.entityType) {
     case 'task':
@@ -477,41 +484,35 @@ function allowedTimeframeQualifiers(timeframeId: string): TimeframeQualifierOpti
   return NONE_ONLY_TIMEFRAME_IDS.has(timeframeId) ? ['none'] : ['during', 'before', 'after']
 }
 
+function isTimeBasedConcept(concept: CommonConcept): boolean {
+  return concept.kind === 'timeframe'
+    || concept.kind === 'season'
+    || concept.kind === 'calendar-window'
+    || concept.kind === 'time-of-day'
+    || concept.kind === 'day-type'
+}
+
 function fallbackConceptSpecifiers(concept: CommonConcept): string[] {
-  if (concept.kind === 'timeframe' || concept.kind === 'season' || concept.kind === 'calendar-window') {
-    return ['during', 'before', 'after', 'between']
+  if (isTimeBasedConcept(concept)) {
+    return ['before', 'after', 'during', 'not before', 'not after', 'not during']
   }
 
-  if (concept.kind === 'time-of-day') {
-    return ['in', 'before', 'after']
-  }
-
-  if (concept.kind === 'day-type') {
-    return ['on', 'before', 'after']
-  }
-
-  if (concept.kind === 'work-pattern' || concept.kind === 'life-context' || concept.kind === 'social-pattern') {
-    return ['when', 'when not']
-  }
-
-  if (concept.kind === 'mood' || concept.kind === 'energy' || concept.kind === 'comfort-state') {
-    return ['when in', 'when not in']
-  }
-
-  return ['during', 'when']
+  return ['before', 'after', 'when', 'when not', 'not before', 'not after']
 }
 
 function conceptSpecifiers(concept: CommonConcept): string[] {
+  const allowed = fallbackConceptSpecifiers(concept)
+  const allowedSet = new Set(allowed)
   const fromExamples = concept.examples
     .map((example) => example.trim().toLowerCase())
-    .map((example) => example.match(/^(during|between|after|before|within|in|on|at)\b/)?.[1])
-    .filter((value): value is string => Boolean(value))
+    .map((example) => example.match(/^(not before|not after|not during|when not|before|after|during|when)\b/)?.[1])
+    .filter((value): value is string => Boolean(value) && allowedSet.has(value))
 
   if (fromExamples.length) {
-    return [...new Set(fromExamples)]
+    return [...new Set([...fromExamples, ...allowed])]
   }
 
-  return fallbackConceptSpecifiers(concept)
+  return allowed
 }
 
 function normalizeTagLabel(value: string): string {
@@ -580,14 +581,9 @@ function taskComposerFlowSteps(draft: TaskSentenceDraft, optionalPath: TaskCompo
 function taskAdjustmentFlowSteps(adjustment: TaskAdjustmentState): TaskAdjustmentUiStepId[] {
   const steps: TaskAdjustmentUiStepId[] = ['summary', 'title', 'mode']
   if (adjustment.sentenceMode === 'every') {
-    steps.push('frequency-starter', 'frequency-count', 'timeframe')
+    steps.push('frequency-starter', 'frequency-count')
   } else if (['at-least', 'exactly', 'more-than'].includes(adjustment.sentenceMode)) {
-    steps.push('count', 'timeframe')
-  } else if (adjustment.sentenceMode === 'one-time') {
-    steps.push('timeframe')
-  }
-  if (adjustment.sentenceMode !== 'at-one-point' && allowedTimeframeQualifiers(adjustment.timeframe).some((option) => option !== 'none')) {
-    steps.push('timeframe-qualifier')
+    steps.push('count')
   }
   steps.push('importance', 'difficulty', 'time', 'focus', 'category', 'context', 'notes')
   return steps
@@ -902,7 +898,7 @@ function taskAdjustmentRouteStep(step: Exclude<TaskAdjustmentUiStepId, 'summary'
     return ['at-least', 'exactly', 'more-than'].includes(adjustment.sentenceMode) ? 'count' : 'mode'
   }
   if (step === 'timeframe' || step === 'timeframe-qualifier') {
-    return adjustment.sentenceMode === 'at-one-point' ? 'mode' : step
+    return 'mode'
   }
   return step
 }
@@ -1063,6 +1059,7 @@ function App() {
   const [skipContextPickerOpen, setSkipContextPickerOpen] = useState(false)
   const [skipPendingContextId, setSkipPendingContextId] = useState<string | null>(null)
   const [taskAdjustment, setTaskAdjustment] = useState<TaskAdjustmentState | null>(null)
+  const [taskAdjustmentBranch, setTaskAdjustmentBranch] = useState<TaskAdjustmentBranch>(null)
   const [taskAdjustmentUiStepIndex, setTaskAdjustmentUiStepIndex] = useState(0)
   const [adjustCategoryInput, setAdjustCategoryInput] = useState('')
   const [adjustCategoryPickerOpen, setAdjustCategoryPickerOpen] = useState(false)
@@ -1166,6 +1163,18 @@ function App() {
   const visibleComposerContexts = composerContextInput.trim().length === 0
     ? [...topComposerContexts, ...sharedConcepts.filter((concept) => !topComposerContexts.some((topConcept) => topConcept.id === concept.id))]
     : sharedConcepts.filter((concept) => concept.label.toLowerCase().includes(composerContextInput.toLowerCase()))
+  const selectedUserProfilesByTaskId = useMemo(() => new Map(
+    state.userTaskProfiles
+      .filter((entry) => entry.userId === selectedUser?.id)
+      .map((entry) => [entry.taskId, entry]),
+  ), [selectedUser?.id, state.userTaskProfiles])
+  const anyTaskProfileByTaskId = useMemo(() => new Map(
+    state.userTaskProfiles.map((entry) => [entry.taskId, entry]),
+  ), [state.userTaskProfiles])
+  const similarTaskMatches = useMemo(
+    () => getSimilarTasks(state.tasks, taskDraft.actionText),
+    [state.tasks, taskDraft.actionText],
+  )
   const skipCategoryOptions = useMemo(() => {
     if (!skipFlow) {
       return [] as Array<{ id: string; label: string }>
@@ -1353,15 +1362,26 @@ function App() {
   }
 
   function openAdjustmentBranch(step: Exclude<TaskAdjustmentUiStepId, 'summary'>): void {
+    const branch: TaskAdjustmentBranch =
+      step === 'title'
+        ? 'title'
+        : step === 'mode' || step === 'frequency-starter' || step === 'frequency-count' || step === 'count' || step === 'timeframe' || step === 'timeframe-qualifier'
+          ? 'cadence'
+          : step === 'importance' || step === 'difficulty' || step === 'time' || step === 'focus'
+            ? 'details'
+            : step
+    setTaskAdjustmentBranch(branch)
     goToAdjustmentStepById(step)
   }
 
   function returnToAdjustmentMainPage(): void {
+    setTaskAdjustmentBranch(null)
     setTaskAdjustmentUiStepIndex(0)
   }
 
   function closeTaskAdjustment(): void {
     setTaskAdjustment(null)
+    setTaskAdjustmentBranch(null)
     setTaskAdjustmentUiStepIndex(0)
     setAdjustCategoryInput('')
     setAdjustCategoryPickerOpen(false)
@@ -1497,6 +1517,10 @@ function App() {
       return
     }
     if (taskAdjustmentCurrentStep === 'title' || taskAdjustmentCurrentStep === 'importance' || taskAdjustmentCurrentStep === 'category' || taskAdjustmentCurrentStep === 'context' || taskAdjustmentCurrentStep === 'notes') {
+      returnToAdjustmentMainPage()
+      return
+    }
+    if (taskAdjustmentBranch !== 'cadence') {
       returnToAdjustmentMainPage()
       return
     }
@@ -2805,6 +2829,7 @@ function App() {
   function openTaskAdjustment(userTaskProfileId: string): void {
     const next = taskAdjustmentFromState(state, userTaskProfileId)
     if (!next) return
+    setTaskAdjustmentBranch(null)
     setTaskAdjustmentUiStepIndex(0)
     setAdjustContextInput('')
     setAdjustPendingContextId(null)
@@ -2950,9 +2975,45 @@ function App() {
     setStoredLocalProfileName(nextLocalName)
     setLocalProfileName(nextLocalName)
 
+    const matchingExistingUser = state.users.find((user) => user.id !== selectedUser?.id && normalizePersonName(user.name) === normalizePersonName(nextLocalName))
+
+    if (matchingExistingUser) {
+      const confirmed = window.confirm(`A person named "${matchingExistingUser.name}" already exists in this garden. Use that same person and sync their subjective heuristics?`)
+      if (confirmed) {
+        const mergedUser = {
+          id: matchingExistingUser.id,
+          name: nextLocalName,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          locale: 'en',
+          weekStartsOn: personDraft.weekStartsOn as UserProfile['weekStartsOn'],
+          workingHours: { dayGroup: 'weekdays' as const, start: personDraft.workStart, end: personDraft.workEnd },
+          availability: {
+            weekdays: { dayGroup: 'weekdays' as const, start: personDraft.weekdayAvailableStart, end: personDraft.weekdayAvailableEnd },
+            weekends: { dayGroup: 'weekends' as const, start: personDraft.weekendAvailableStart, end: personDraft.weekendAvailableEnd },
+          },
+          workMode: personDraft.workMode,
+          isHomeNow: personDraft.isHomeNow,
+          allowWorkdayMicroTasks: personDraft.allowWorkdayMicroTasks,
+          homeWifiNames: personDraft.homeWifiNames.split(',').map((entry) => entry.trim()).filter(Boolean),
+          forgiveness: personDraft.forgiveness,
+          tirednessSensitivity: personDraft.tirednessSensitivity,
+          recoveryPerHour: personDraft.recoveryPerHour,
+          difficultyBias: personDraft.difficultyBias,
+        }
+
+        updateState((previous) => ({
+          ...previous,
+          users: previous.users.map((user) => user.id === matchingExistingUser.id ? mergedUser : user),
+          selectedUserId: matchingExistingUser.id,
+        }))
+        showToast('Connected to the existing person profile.')
+        return
+      }
+    }
+
     const nextUser = {
       id: asUpdate && selectedUser ? selectedUser.id : crypto.randomUUID(),
-      name: asUpdate && selectedUser ? selectedUser.name : nextLocalName,
+      name: nextLocalName,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       locale: 'en',
       weekStartsOn: personDraft.weekStartsOn as UserProfile['weekStartsOn'],
@@ -2975,6 +3036,7 @@ function App() {
       updateState((previous) => ({
         ...previous,
         users: previous.users.map((user) => user.id === selectedUser.id ? nextUser : user),
+        selectedUserId: selectedUser.id,
       }))
       showToast('Perspective updated.')
       return
@@ -3624,7 +3686,10 @@ function App() {
                   <div className="entry-stack">
                     <div className="entry-option-grid compact-option-grid">
                       <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('title')}>
-                        <strong>Description</strong>
+                        <strong>Title</strong>
+                      </button>
+                      <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('mode')}>
+                        <strong>Cadence</strong>
                       </button>
                       <button type="button" className="entry-option-card" onClick={() => openAdjustmentBranch('importance')}>
                         <strong>Details</strong>
@@ -3650,7 +3715,7 @@ function App() {
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' && taskAdjustment.title.trim()) {
                         event.preventDefault()
-                        advanceAdjustmentBranch(taskAdjustment, 'title', ADJUSTMENT_DESCRIPTION_STEPS)
+                        returnToAdjustmentMainPage()
                       }
                     }}
                     placeholder="clean the apartment"
@@ -3668,7 +3733,7 @@ function App() {
                         onClick={() => {
                           const nextAdjustment = { ...taskAdjustment, sentenceMode: option.id }
                           setTaskAdjustment(nextAdjustment)
-                          advanceAdjustmentBranch(nextAdjustment, 'mode', ADJUSTMENT_DESCRIPTION_STEPS)
+                          advanceAdjustmentBranch(nextAdjustment, 'mode', ADJUSTMENT_CADENCE_STEPS)
                         }}
                       >
                         <strong>{option.label}</strong>
@@ -3687,7 +3752,7 @@ function App() {
                         onClick={() => {
                           const nextAdjustment = { ...taskAdjustment, frequencyStarter: option.id }
                           setTaskAdjustment(nextAdjustment)
-                          advanceAdjustmentBranch(nextAdjustment, 'frequency-starter', ADJUSTMENT_DESCRIPTION_STEPS)
+                          advanceAdjustmentBranch(nextAdjustment, 'frequency-starter', ADJUSTMENT_CADENCE_STEPS)
                         }}
                       >
                         <strong>{option.label}</strong>
@@ -3706,7 +3771,7 @@ function App() {
                         onClick={() => {
                           const nextAdjustment = { ...taskAdjustment, frequencyCount: option.id }
                           setTaskAdjustment(nextAdjustment)
-                          advanceAdjustmentBranch(nextAdjustment, 'frequency-count', ADJUSTMENT_DESCRIPTION_STEPS)
+                          advanceAdjustmentBranch(nextAdjustment, 'frequency-count', ADJUSTMENT_CADENCE_STEPS)
                         }}
                       >
                         <strong>{frequencyCountStepLabel(option)}</strong>
@@ -3725,7 +3790,7 @@ function App() {
                         onClick={() => {
                           const nextAdjustment = { ...taskAdjustment, countChoice: option.id }
                           setTaskAdjustment(nextAdjustment)
-                          advanceAdjustmentBranch(nextAdjustment, 'count', ADJUSTMENT_DESCRIPTION_STEPS)
+                          advanceAdjustmentBranch(nextAdjustment, 'count', ADJUSTMENT_CADENCE_STEPS)
                         }}
                       >
                         <strong>{option.label} times</strong>
@@ -3749,7 +3814,7 @@ function App() {
                             timeframeQualifier: allowed.includes(taskAdjustment.timeframeQualifier) ? taskAdjustment.timeframeQualifier : allowed[0] ?? 'none',
                           }
                           setTaskAdjustment(nextAdjustment)
-                          advanceAdjustmentBranch(nextAdjustment, 'timeframe', ADJUSTMENT_DESCRIPTION_STEPS)
+                          advanceAdjustmentBranch(nextAdjustment, 'timeframe', ADJUSTMENT_CADENCE_STEPS)
                         }}
                       >
                         <strong>{option.label}</strong>
@@ -3768,7 +3833,7 @@ function App() {
                         onClick={() => {
                           const nextAdjustment = { ...taskAdjustment, timeframeQualifier: option.id }
                           setTaskAdjustment(nextAdjustment)
-                          advanceAdjustmentBranch(nextAdjustment, 'timeframe-qualifier', ADJUSTMENT_DESCRIPTION_STEPS)
+                          advanceAdjustmentBranch(nextAdjustment, 'timeframe-qualifier', ADJUSTMENT_CADENCE_STEPS)
                         }}
                       >
                         <strong>{option.id === 'none' ? 'anytime' : option.label}</strong>
@@ -4033,7 +4098,7 @@ function App() {
                     <button className="primary-btn" onClick={returnToAdjustmentMainPage}>Done</button>
                   )}
                   {taskAdjustmentCurrentStep === 'title' && (
-                    <button className="primary-btn" onClick={() => advanceAdjustmentBranch(taskAdjustment, 'title', ADJUSTMENT_DESCRIPTION_STEPS)} disabled={!taskAdjustment.title.trim()}>Continue</button>
+                    <button className="primary-btn" onClick={returnToAdjustmentMainPage} disabled={!taskAdjustment.title.trim()}>Done</button>
                   )}
                 </div>
               </div>
@@ -4750,20 +4815,51 @@ function App() {
 
               <div className="entry-body entry-body-compact">
                 {taskComposerCurrentStep === 'name' && (
-                  <input
-                    ref={nameInputRef}
-                    className="entry-title-input"
-                    value={taskDraft.actionText}
-                    onChange={(event) => setTaskDraft((previous) => ({ ...previous, actionText: event.target.value }))}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' && taskDraft.actionText.trim()) {
-                        event.preventDefault()
-                        advanceComposer(taskDraft, 'name')
-                      }
-                    }}
-                    placeholder="clean the apartment"
-                    autoFocus
-                  />
+                  <div className="entry-stack">
+                    <input
+                      ref={nameInputRef}
+                      className="entry-title-input"
+                      value={taskDraft.actionText}
+                      onChange={(event) => setTaskDraft((previous) => ({ ...previous, actionText: event.target.value }))}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && taskDraft.actionText.trim()) {
+                          event.preventDefault()
+                          advanceComposer(taskDraft, 'name')
+                        }
+                      }}
+                      placeholder="clean the apartment"
+                      autoFocus
+                    />
+                    {similarTaskMatches.length > 0 && (
+                      <div className="entry-stack">
+                        <p className="subtle-text">Similar tasks already in this garden</p>
+                        <div className="entry-stack">
+                          {similarTaskMatches.map((match) => {
+                            const userTaskProfile = selectedUserProfilesByTaskId.get(match.task.id) ?? anyTaskProfileByTaskId.get(match.task.id)
+                            return (
+                              <button
+                                key={match.task.id}
+                                type="button"
+                                className="similar-task-result"
+                                onClick={() => {
+                                  if (!userTaskProfile) return
+                                  setTaskComposerOpen(false)
+                                  setTaskComposerUiStepIndex(0)
+                                  setTaskComposerOptionalPath(null)
+                                  openTaskAdjustment(userTaskProfile.id)
+                                }}
+                                disabled={!userTaskProfile}
+                              >
+                                <strong>{match.task.title}</strong>
+                                <span className="subtle-text">{formatCadence(match.task)}</span>
+                                <span className="subtle-text">{match.exact ? 'already added' : `${Math.round(match.score * 100)}% match`}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {taskComposerCurrentStep === 'mode' && (

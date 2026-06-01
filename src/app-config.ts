@@ -189,6 +189,8 @@ export const SENTENCE_INLINE_SPINNER_CLASS = 'minimal-cadence-teaser minimal-inl
 export const SYSTEM_PRIMITIVES = [
 	{ id: 'wday', label: 'Day of week', valueType: 'enum' as const, values: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] },
 	{ id: 'tod', label: 'Time of day', valueType: 'time' as const },
+	{ id: 'dom', label: 'Day of month', valueType: 'number' as const, min: 1, max: 31 },
+	{ id: 'doy', label: 'Day of year', valueType: 'number' as const, min: 1, max: 366 },
 	{ id: 'month', label: 'Month', valueType: 'number' as const, min: 1, max: 12 },
 	{ id: 'mood', label: 'Mood', valueType: 'number' as const, min: 1, max: 5 },
 	{ id: 'tiredness', label: 'Tiredness', valueType: 'number' as const, min: 1, max: 3 },

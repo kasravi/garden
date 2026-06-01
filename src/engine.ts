@@ -1,4 +1,5 @@
 import type { AppState, CadenceUnit, FeedCard, TaskDefinition, TaskHealth, TaskLogEntry, UserProfile, UserTaskProfile } from './types'
+import { buildRankingContext, evaluateRuleSignals, evaluateTaskContexts, FEED_RELEVANCE_THRESHOLD } from './ranking.ts'
 
 export const MOOD_EMOJIS = ['😮‍💨', '😕', '😐', '🙂', '🤩']
 
@@ -81,7 +82,7 @@ function computeDueScore(task: TaskDefinition, actions: TaskLogEntry[], now: Dat
   return clamp(elapsed / interval, 0, 1.65)
 }
 
-function computeContextScore(userTaskProfile: UserTaskProfile, profile: UserProfile, now: Date): number {
+function computeAvailabilityScore(userTaskProfile: UserTaskProfile, profile: UserProfile, now: Date): number {
   const minute = now.getHours() * 60 + now.getMinutes()
   const availability = currentAvailability(profile, now)
   const preferredWindow = userTaskProfile.preferredTime
@@ -214,7 +215,7 @@ function inferSuggestedMood(card: FeedCard): string {
   return 'gentle focus'
 }
 
-export function getFeedCards(state: AppState, personId: string, now = new Date()): FeedCard[] {
+export function rankFeedCards(state: AppState, personId: string, now = new Date()): FeedCard[] {
   const profile = state.users.find((entry) => entry.id === personId)
   if (!profile) {
     return []
@@ -222,6 +223,7 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
 
   const taskIndex = new Map(state.tasks.map((task) => [task.id, task]))
   const categoryIndex = new Map(state.categories.map((category) => [category.id, category]))
+  const conceptIndex = new Map(state.concepts.map((concept) => [concept.id, concept]))
   const sharedCategoryIndex = new Map<string, string[]>()
   for (const assignment of state.sharedTaskCategories) {
     sharedCategoryIndex.set(assignment.taskId, [...(sharedCategoryIndex.get(assignment.taskId) ?? []), assignment.categoryId])
@@ -230,7 +232,6 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
   for (const assignment of state.userTaskCategories.filter((entry) => entry.userId === personId)) {
     userCategoryIndex.set(assignment.taskId, [...(userCategoryIndex.get(assignment.taskId) ?? []), assignment.categoryId])
   }
-  const adoptedRuleLabels = state.userRules.filter((rule) => rule.userId === personId && rule.enabled)
   const fatigue = computeFatigue(state, profile, now)
 
   return state.userTaskProfiles
@@ -243,7 +244,6 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
 
       const actions = logsForUserTaskProfile(state.logs, userTaskProfile.id)
       const dueScore = computeDueScore(task, actions, now)
-      const contextScore = computeContextScore(userTaskProfile, profile, now)
       const compassion = computeCompassion(userTaskProfile, profile, actions)
       const perceivedDifficulty = clamp(
         userTaskProfile.grandness * 0.32 + userTaskProfile.subjectiveTime * 0.3 + userTaskProfile.focus * 0.22 + profile.difficultyBias * 0.16,
@@ -251,6 +251,15 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
         1
       )
       const personalFatigue = clamp(fatigue + userTaskProfile.focus * 0.16 + userTaskProfile.subjectiveTime * 0.14 + perceivedDifficulty * 0.1, 0, 1.3)
+      const categoryIds = [...new Set([...(sharedCategoryIndex.get(task.id) ?? []), ...(userCategoryIndex.get(task.id) ?? [])])]
+      const availabilityScore = computeAvailabilityScore(userTaskProfile, profile, now)
+      const rankingContext = buildRankingContext(profile, userTaskProfile, now, personalFatigue, categoryIds)
+      const taskContextSignal = evaluateTaskContexts(task, rankingContext, conceptIndex)
+      const ruleSignal = evaluateRuleSignals(state, personId, task, rankingContext, conceptIndex)
+      const contextScore = taskContextSignal.hasContexts
+        ? clamp(availabilityScore * 0.25 + taskContextSignal.score * 0.75, 0, 1)
+        : availabilityScore
+      const contextGate = taskContextSignal.hasContexts ? clamp(0.08 + taskContextSignal.score * 0.92, 0.08, 1) : 1
       const health = computeHealthFromSignals(
         computeCompletionRate(task, actions),
         computeSkipRate(actions),
@@ -260,23 +269,15 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
       )
       const lastDone = lastActionOfKind(actions, 'done')
       const lastSkip = lastActionOfKind(actions, 'skip')
-      const categoryIds = [...new Set([...(sharedCategoryIndex.get(task.id) ?? []), ...(userCategoryIndex.get(task.id) ?? [])])]
-      const matchingRuleLabels = adoptedRuleLabels
-        .filter((rule) => {
-          if (rule.target.type !== 'category' || !rule.target.categoryId) {
-            return false
-          }
-          return categoryIds.includes(rule.target.categoryId)
-        })
-        .map((rule) => rule.label)
-      const ruleBoost = matchingRuleLabels.length * 0.04
-      const relevance =
-        dueScore * (0.34 + userTaskProfile.importance * 0.16) +
-        contextScore * 0.18 +
-        (1 - clamp(personalFatigue, 0, 1)) * 0.18 +
+      const relevanceBase =
+        dueScore * (0.24 + userTaskProfile.importance * 0.12) +
+        contextScore * 0.28 +
+        availabilityScore * 0.08 +
+        (1 - clamp(personalFatigue, 0, 1)) * 0.16 +
         compassion * 0.12 +
         (1 - perceivedDifficulty) * 0.08 +
-        ruleBoost
+        ruleSignal.scoreDelta
+      const relevance = clamp(relevanceBase * contextGate, 0, 2)
 
       const card: FeedCard = {
         userTaskProfile,
@@ -284,6 +285,9 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
         user: profile,
         dueScore,
         contextScore,
+        availabilityScore,
+        taskContextScore: taskContextSignal.score,
+        ruleScore: ruleSignal.scoreDelta,
         fatigue: personalFatigue,
         compassion,
         relevance,
@@ -294,15 +298,19 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
         lastSkipAt: lastSkip?.createdAt,
         suggestedMood: '',
         categoryLabels: categoryIds.map((id) => categoryIndex.get(id)?.label ?? id),
-        adoptedRuleLabels: matchingRuleLabels
+        adoptedRuleLabels: ruleSignal.matchingLabels
       }
 
       card.suggestedMood = inferSuggestedMood(card)
       return card
     })
     .filter((entry): entry is FeedCard => Boolean(entry))
+    .sort((left, right) => right.relevance - left.relevance)
+}
+
+export function getFeedCards(state: AppState, personId: string, now = new Date()): FeedCard[] {
+  return rankFeedCards(state, personId, now)
     .filter((card) => {
-      // Cooldown: exclude tasks where last action is within 30% of cadence interval
       const lastAction = card.lastAction
       if (lastAction) {
         const { every, unit } = cadenceParts(card.task)
@@ -310,9 +318,8 @@ export function getFeedCards(state: AppState, personId: string, now = new Date()
         const elapsed = now.getTime() - new Date(lastAction.createdAt).getTime()
         if (elapsed < interval * 0.3) return false
       }
-      return card.relevance >= 0.42 || card.dueScore >= 0.8 || !card.lastDoneAt
+      return card.relevance >= FEED_RELEVANCE_THRESHOLD
     })
-    .sort((left, right) => right.relevance - left.relevance)
     .slice(0, 8)
 }
 

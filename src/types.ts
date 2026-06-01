@@ -312,6 +312,9 @@ export interface FeedCard {
   user: UserProfile
   dueScore: number
   contextScore: number
+  availabilityScore: number
+  taskContextScore: number
+  ruleScore: number
   fatigue: number
   compassion: number
   relevance: number

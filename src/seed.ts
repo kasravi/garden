@@ -1,4 +1,4 @@
-import { DEFAULT_CATEGORIES, DEFAULT_COMMON_CONCEPTS } from './ontology'
+import { DEFAULT_CATEGORIES, DEFAULT_COMMON_CONCEPTS } from './ontology.ts'
 import type {
   AppState,
   CategoryDefinition,
@@ -44,8 +44,8 @@ const defaultConceptOverrides: UserConceptDefinition[] = [
   {
     id: crypto.randomUUID(),
     userId: defaultUser.id,
-    conceptId: 'time-workday',
-    label: 'My workday',
+    conceptId: 'context-work-time',
+    label: 'My work time',
     notes: 'Cognitive work is easier before 14:00. Light chores fit late afternoon.',
     intensity: 0.72,
     updatedAt: new Date().toISOString()
@@ -53,8 +53,8 @@ const defaultConceptOverrides: UserConceptDefinition[] = [
   {
     id: crypto.randomUUID(),
     userId: defaultUser.id,
-    conceptId: 'mood-good-enough',
-    label: 'My good-enough mood',
+    conceptId: 'context-mood',
+    label: 'My mood context',
     notes: 'When I do not feel bright, but I can still do one kind thing for the house.',
     intensity: 0.65,
     updatedAt: new Date().toISOString()
@@ -62,8 +62,8 @@ const defaultConceptOverrides: UserConceptDefinition[] = [
   {
     id: crypto.randomUUID(),
     userId: defaultUser.id,
-    conceptId: 'energy-light-effort',
-    label: 'My light effort',
+    conceptId: 'context-energy',
+    label: 'My energy context',
     notes: 'Five to ten minute chores are usually possible, even when I am tired.',
     intensity: 0.68,
     updatedAt: new Date().toISOString()
